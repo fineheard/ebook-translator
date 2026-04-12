@@ -570,7 +570,7 @@ def translate_soup_sequential(soup, translator, source_lang: str, target_lang: s
         
         try:
             empty_p = BeautifulSoup('<p></p>', 'html.parser').p
-            trans_block = BeautifulSoup(f'<div class="translation">{translated}</div>', 'html.parser')
+            trans_block = BeautifulSoup(f'<div class="ebook-trans-t" style="margin: 0.2em 0 0.3em 0; color: #555;">{translated}</div>', 'html.parser')
             block.insert_after(empty_p)
             empty_p.insert_after(trans_block)
         except Exception as e:
