@@ -12,13 +12,101 @@ from bs4 import BeautifulSoup, NavigableString
 
 LM_STUDIO_URL = "http://localhost:1234"
 
-TRANSLATION_PROMPT_TEMPLATE = """You are a professional translator. Translate the following text from {source_lang} to {target_lang}.
+PROMPT_STYLES = {
+    "general": """You are a professional translator. Translate the following text from {source_lang} to {target_lang} naturally and fluently.
+Focus on clarity and readability. Only output the translated text, nothing else.
+
+Text to translate:
+{text}
+
+Translation:""",
+
+    "technical": """You are a technical translator specializing in software development and programming topics.
+Translate accurately. Preserve technical terms, code snippets (like `variable names`, `function names`), symbols (like >, ≹), and proper nouns.
+When a technical term has no widely-accepted translation, keep it in English.
+Only output the translated text, nothing else.
+
+Text to translate:
+{text}
+
+Translation:""",
+
+    "academic": """You are an academic translator specializing in research papers and technical articles.
+Use precise, formal language. Translate technical terms accurately and maintain the academic tone.
+Include transliteration for proper nouns on first occurrence if helpful.
+Only output the translated text, nothing else.
+
+Text to translate:
+{text}
+
+Translation:""",
+
+    "literary": """You are a literary translator. Preserve the author's voice, tone, and style.
+Translate metaphors and idioms creatively to convey the same feeling in the target language.
+Maintain the rhythm and flow of the original text.
+Only output the translated text, nothing else.
+
+Text to translate:
+{text}
+
+Translation:""",
+
+    "news": """You are a news translator. Write in clear, objective, and informative style.
+Prioritize accuracy of facts and terminology. Keep headlines concise.
+Only output the translated text, nothing else.
+
+Text to translate:
+{text}
+
+Translation:""",
+
+    "business": """You are a business translator. Write in professional, formal yet clear style.
+Use appropriate business terminology. Be concise and impactful.
+Only output the translated text, nothing else.
+
+Text to translate:
+{text}
+
+Translation:""",
+
+    "marketing": """You are a marketing translator. Write in engaging, persuasive, and lively style.
+Make the content appealing to target audience. Use natural expressions.
+Only output the translated text, nothing else.
+
+Text to translate:
+{text}
+
+Translation:""",
+
+    "simple": """You are a translator specializing in simplified Chinese for general audiences.
+Use short sentences and common vocabulary. Aim for easy understanding at approximately Grade 6 reading level.
+Only output the translated text, nothing else.
+
+Text to translate:
+{text}
+
+Translation:""",
+
+    "bilingual": """You are a bilingual translator. Keep English technical terms, code, and symbols in English.
+Translate surrounding text naturally. Mix Chinese and English where it improves clarity.
+Only output the translated text, nothing else.
+
+Text to translate:
+{text}
+
+Translation:""",
+
+    "podcast": """You are a translator specializing in converting written text into natural spoken Chinese.
+Write as if speaking conversationally. Use natural speech patterns and expressions.
 Only output the translated text, nothing else.
 
 Text to translate:
 {text}
 
 Translation:"""
+}
+
+DEFAULT_PROMPT_STYLE = "general"
 
 def get_file_extension(file_path: str) -> str:
     return os.path.splitext(file_path)[1].lower()
@@ -29,8 +117,9 @@ def estimate_tokens(text: str) -> int:
     result = int(chinese_chars / 1.5 + other_chars / 4)
     return max(1, result) if text.strip() else 0
 
-def estimate_prompt_tokens(text: str, source_lang: str, target_lang: str) -> int:
-    prompt = TRANSLATION_PROMPT_TEMPLATE.format(source_lang=source_lang, target_lang=target_lang, text=text)
+def estimate_prompt_tokens(text: str, source_lang: str, target_lang: str, style: str = DEFAULT_PROMPT_STYLE) -> int:
+    template = PROMPT_STYLES.get(style, PROMPT_STYLES[DEFAULT_PROMPT_STYLE])
+    prompt = template.format(source_lang=source_lang, target_lang=target_lang, text=text)
     return estimate_tokens(prompt)
 
 def check_paragraph_length(text: str, max_tokens: int) -> tuple[bool, int]:
@@ -51,10 +140,10 @@ def get_loaded_context_length(base_url: str) -> int:
         pass
     return 4096
 
-def calculate_max_para_tokens(base_url: str, source_lang: str, target_lang: str) -> int:
+def calculate_max_para_tokens(base_url: str, source_lang: str, target_lang: str, style: str = DEFAULT_PROMPT_STYLE) -> int:
     context_length = get_loaded_context_length(base_url)
     sample_text = "a" * 100
-    prompt_tokens = estimate_prompt_tokens(sample_text, source_lang, target_lang)
+    prompt_tokens = estimate_prompt_tokens(sample_text, source_lang, target_lang, style)
     reserved = prompt_tokens + int(context_length * 0.1)
     return max(500, context_length - reserved)
 
@@ -95,9 +184,10 @@ class EpubParser:
             script.decompose()
 
 class LMStudioTranslator:
-    def __init__(self, base_url: str = "http://localhost:1234", timeout: int = 3600, max_response_tokens: int = None):
+    def __init__(self, base_url: str = "http://localhost:1234", timeout: int = 3600, max_response_tokens: int = None, style: str = DEFAULT_PROMPT_STYLE):
         self.base_url = base_url
         self.timeout = timeout
+        self.style = style
         self.total_tokens = 0
         self.total_time = 0.0
         if max_response_tokens is None:
@@ -108,7 +198,8 @@ class LMStudioTranslator:
     
     def translate(self, text: str, source_lang: str, target_lang: str) -> dict:
         import time
-        prompt = TRANSLATION_PROMPT_TEMPLATE.format(
+        template = PROMPT_STYLES.get(self.style, PROMPT_STYLES[DEFAULT_PROMPT_STYLE])
+        prompt = template.format(
             source_lang=source_lang,
             target_lang=target_lang,
             text=text
@@ -459,6 +550,9 @@ def main():
     parser.add_argument('--lm-url', default=LM_STUDIO_URL, help=f'LM Studio API URL (default: {LM_STUDIO_URL})')
     parser.add_argument('--timeout', type=int, default=3600, help='Translation timeout in seconds (default: 3600)')
     parser.add_argument('-p', '--parallel', type=int, default=4, help='Number of parallel translation workers (default: 4)')
+    parser.add_argument('--prompt-style', default=DEFAULT_PROMPT_STYLE,
+                        choices=list(PROMPT_STYLES.keys()),
+                        help=f'Translation style (default: {DEFAULT_PROMPT_STYLE})')
     
     args = parser.parse_args()
     
@@ -492,9 +586,10 @@ def main():
     
     print("\n[2/3] Translating content...")
     context_length = get_loaded_context_length(args.lm_url)
-    max_para_tokens = calculate_max_para_tokens(args.lm_url, args.source, args.target)
+    max_para_tokens = calculate_max_para_tokens(args.lm_url, args.source, args.target, args.prompt_style)
     print(f"  Model context: {context_length}, max paragraph: {max_para_tokens} tokens")
-    translator = LMStudioTranslator(base_url=args.lm_url, timeout=args.timeout)
+    print(f"  Prompt style:  {args.prompt_style}")
+    translator = LMStudioTranslator(base_url=args.lm_url, timeout=args.timeout, style=args.prompt_style)
     translate_chapters(chapters, args.source, args.target, translator, max_para_tokens)
     
     print("\n[3/3] Saving translated ebook...")
