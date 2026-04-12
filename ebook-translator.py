@@ -593,10 +593,15 @@ def translate_soup_parallel(soup, translator, source_lang: str, target_lang: str
     
     total = len(block_texts)
     results = {}
+    total_time = 0.0
+    total_tokens_used = 0
     
     def translate_block(index_text):
         idx, (block, text) = index_text
         tokens = estimate_tokens(text)
+        elapsed = 0.0
+        tokens_used = 0
+        translated = ""
         
         if tokens > max_para_tokens:
             chunks = split_long_paragraph(text, max_para_tokens, estimate_tokens)
@@ -605,6 +610,8 @@ def translate_soup_parallel(soup, translator, source_lang: str, target_lang: str
                 try:
                     result = translator.translate(chunk, source_lang, target_lang)
                     trans_results.append(result["text"])
+                    elapsed += result.get("elapsed", 0.0)
+                    tokens_used += result.get("total_tokens", 0)
                 except Exception as e:
                     trans_results.append(f"[Error: {str(e)}]")
             translated = ''.join(trans_results)
@@ -612,6 +619,8 @@ def translate_soup_parallel(soup, translator, source_lang: str, target_lang: str
             try:
                 result = translator.translate(text, source_lang, target_lang)
                 translated = result.get("text", "")
+                elapsed = result.get("elapsed", 0.0)
+                tokens_used = result.get("total_tokens", 0)
                 if "no models loaded" in translated.lower():
                     print(f"\n[ERROR] No model loaded in LM Studio.")
                     raise SystemExit(1)
@@ -620,17 +629,19 @@ def translate_soup_parallel(soup, translator, source_lang: str, target_lang: str
             except Exception as e:
                 translated = f"[Error: {str(e)}]"
         
-        return idx, block, translated, tokens
+        return idx, block, translated, tokens, tokens_used, elapsed
     
     completed = 0
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {executor.submit(translate_block, (i, bt)): i for i, bt in enumerate(block_texts)}
         for future in as_completed(futures):
             try:
-                idx, block, translated, tokens = future.result()
-                results[idx] = (block, translated, tokens)
+                idx, block, translated, tokens, tokens_used, elapsed = future.result()
+                results[idx] = (block, translated, tokens, tokens_used, elapsed)
+                total_time += elapsed
+                total_tokens_used += tokens_used
                 completed += 1
-                print(f"    [{completed}/{total}] {tokens} tokens... OK", flush=True)
+                print(f"    [{completed}/{total}] {tokens} tokens... OK, {tokens_used} tokens, {format_time(elapsed)}", flush=True)
             except SystemExit:
                 raise
             except Exception as e:
@@ -638,7 +649,7 @@ def translate_soup_parallel(soup, translator, source_lang: str, target_lang: str
     
     print(f"  Applying translations...")
     for idx in sorted(results.keys()):
-        block, translated, tokens = results[idx]
+        block, translated, tokens, tokens_used, elapsed = results[idx]
         try:
             empty_p = soup.new_tag('p')
             trans_block = BeautifulSoup(f'<div class="translation">{translated}</div>', 'html.parser')
@@ -706,7 +717,7 @@ def main():
     parser.add_argument('-t', '--target', default='Chinese', help='Target language (default: Chinese)')
     parser.add_argument('--lm-url', default=LM_STUDIO_URL, help=f'LM Studio API URL (default: {LM_STUDIO_URL})')
     parser.add_argument('--timeout', type=int, default=3600, help='Translation timeout in seconds (default: 3600)')
-    parser.add_argument('-p', '--parallel', type=int, default=4, help='Number of parallel translation workers (default: 4)')
+    parser.add_argument('-p', '--parallel', type=int, default=1, help='Number of parallel workers (default: 1, sequential)')
     parser.add_argument('--prompt-style', default=None,
                         choices=list(PROMPT_STYLES.keys()),
                         help='Translation style (default: auto-detect)')
