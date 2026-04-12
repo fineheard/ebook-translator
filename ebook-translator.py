@@ -586,9 +586,13 @@ def translate_chapters(chapters: List[Dict[str, Any]], source_lang: str, target_
         soup = chapter['soup']
         translate_soup(soup, translator, source_lang, target_lang, max_para_tokens)
 
-def generate_output_filename(input_path: str, target_lang: str, model_info: dict, style: str) -> str:
+def generate_output_filename(translated_filename: str, model_info: dict, style: str) -> str:
     from datetime import datetime
-    base, ext = os.path.splitext(os.path.basename(input_path))
+    import re
+    
+    safe_filename = re.sub(r'[\\/:*?"<>|]', '_', translated_filename)
+    if len(safe_filename) > 100:
+        safe_filename = safe_filename[:100]
     
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     
@@ -596,13 +600,13 @@ def generate_output_filename(input_path: str, target_lang: str, model_info: dict
     safe_name = model_info["name"].replace("/", "_").replace("\\", "_").replace(" ", "_")
     safe_quant = model_info["quantization"].replace("/", "_").replace("\\", "_").replace(" ", "_")
     
-    base_name = f"{base}_{target_lang}_{safe_publisher}_{safe_name}_{safe_quant}_{style}_{timestamp}"
+    base_name = f"{safe_filename}_{safe_publisher}_{safe_name}_{safe_quant}_{style}_{timestamp}"
     
-    output_path = base_name + ext
+    output_path = base_name + ".epub"
     seq = 1
     while os.path.exists(output_path):
         seq_str = f"{seq:02d}"
-        output_path = f"{base_name}_{seq_str}{ext}"
+        output_path = f"{base_name}_{seq_str}.epub"
         seq += 1
     
     return output_path
@@ -673,17 +677,21 @@ def main():
     else:
         print(f"\n[2/3] Translating content (style: {args.prompt_style})...")
     
-    if args.output is None:
-        args.output = generate_output_filename(args.input_file, args.target, model_info, args.prompt_style)
-    
-    print(f"  Output:   {args.output}")
-    
     context_length = model_info["context_length"]
     max_para_tokens = calculate_max_para_tokens(args.lm_url, args.source, args.target, args.prompt_style)
     print(f"  Model context: {context_length}, max paragraph: {max_para_tokens} tokens")
     
     translator = LMStudioTranslator(base_url=args.lm_url, timeout=args.timeout, style=args.prompt_style)
-    translate_chapters(chapters, args.source, args.target, translator, max_para_tokens)
+    
+    if args.output is None:
+        print("  Translating filename...")
+        original_name = os.path.splitext(os.path.basename(args.input_file))[0]
+        name_result = translator.translate(original_name, args.source, args.target)
+        translated_name = name_result.get("text", original_name)
+        print(f"  Filename: {original_name} → {translated_name}")
+        args.output = generate_output_filename(translated_name, model_info, args.prompt_style)
+    
+    print(f"  Output:   {args.output}")
     
     print("\n[3/3] Saving translated ebook...")
     try:
