@@ -443,17 +443,6 @@ def format_time(seconds: float) -> str:
         minutes = int((seconds % 3600) // 60)
         return f"{hours}h {minutes}m"
 
-def can_merge_paragraphs(para: dict) -> bool:
-    html_str = para.get('html', '')
-    soup = BeautifulSoup(html_str, 'html.parser')
-    p = soup.find('p')
-    if not p:
-        return False
-    for child in p.children:
-        if hasattr(child, 'name') and child.name and child.name not in ['br']:
-            return False
-    return True
-
 def collect_text_nodes(soup) -> list:
     SKIP_TAGS = ['script', 'style', 'head', 'title', 'meta', 'link', 'code', 'pre', 'kbd', 'samp', 'tt']
     SKIP_PARENTS = ['[document]', 'html', 'body']
@@ -571,9 +560,9 @@ def translate_soup_sequential(soup, translator, source_lang: str, target_lang: s
                 translated = f"[Error: {str(e)}]"
         
         try:
-            empty_p = soup.new_tag('p')
+            separator = soup.new_tag('hr')
             trans_block = BeautifulSoup(f'<div class="translation">{translated}</div>', 'html.parser')
-            block.insert_after(empty_p)
+            block.insert_after(separator)
             block.insert_after(trans_block)
         except Exception as e:
             print(f"Insert failed: {e}")
