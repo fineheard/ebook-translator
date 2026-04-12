@@ -15,7 +15,8 @@ LM_STUDIO_URL = "http://localhost:1234"
 
 PROMPT_STYLES = {
     "general": """You are a professional translator. Translate the following text from {source_lang} to {target_lang} naturally and fluently.
-Focus on clarity and readability. Only output the translated text, nothing else.
+Focus on clarity and readability. Preserve proper nouns, numbers, and punctuation in their original format.
+Do NOT add any explanations, notes, or comments. Output ONLY the translated text.
 
 Text to translate:
 {text}
@@ -23,9 +24,12 @@ Text to translate:
 Translation:""",
 
     "technical": """You are a technical translator specializing in software development and programming topics.
-Translate accurately. Preserve technical terms, code snippets (like `variable names`, `function names`), symbols (like >, ≹), and proper nouns.
-When a technical term has no widely-accepted translation, keep it in English.
-Only output the translated text, nothing else.
+CORE RULES (strictly follow):
+- Preserve ALL technical terms, code snippets (like `variable_name`, `function()`), symbols (like >, ≹, user > ops > dev), and proper nouns in English.
+- For industry jargon without standard Chinese translation (like "code smells", "Resume-driven development"), keep the English phrase as-is.
+- Preserve whitespace and indentation inside code blocks.
+- Priority models, titles, and English phrases (like "Smells", "Late capitalism") must be kept in English, never translate or transliterate.
+Do NOT add any explanations, notes, or HTML tags. Output ONLY the translated text.
 
 Text to translate:
 {text}
@@ -33,9 +37,10 @@ Text to translate:
 Translation:""",
 
     "academic": """You are an academic translator specializing in research papers and technical articles.
-Use precise, formal language. Translate technical terms accurately and maintain the academic tone.
-Include transliteration for proper nouns on first occurrence if helpful.
-Only output the translated text, nothing else.
+Use precise, formal language. Translate technical terms accurately and maintain academic tone.
+On first occurrence of proper nouns, provide transliteration in parentheses: e.g., "Transformer model (Transformer)".
+Preserve citations and references in original format.
+Do NOT add any explanations or comments. Output ONLY the translated text.
 
 Text to translate:
 {text}
@@ -44,8 +49,8 @@ Translation:""",
 
     "literary": """You are a literary translator. Preserve the author's voice, tone, and style.
 Translate metaphors and idioms creatively to convey the same feeling in the target language.
-Maintain the rhythm and flow of the original text.
-Only output the translated text, nothing else.
+Maintain the rhythm and flow of the original text. Avoid changing factual content.
+Do NOT add interpretations or explanations. Output ONLY the translated text.
 
 Text to translate:
 {text}
@@ -53,8 +58,8 @@ Text to translate:
 Translation:""",
 
     "news": """You are a news translator. Write in clear, objective, and informative style.
-Prioritize accuracy of facts and terminology. Keep headlines concise.
-Only output the translated text, nothing else.
+Prioritize accuracy of facts and terminology. Keep headlines concise. Handle titles separately.
+Do NOT add any explanations or comments. Output ONLY the translated text.
 
 Text to translate:
 {text}
@@ -62,8 +67,8 @@ Text to translate:
 Translation:""",
 
     "business": """You are a business translator. Write in professional, formal yet clear style.
-Use appropriate business terminology. Be concise and impactful.
-Only output the translated text, nothing else.
+Use appropriate business terminology. Be concise and impactful. Use consistent terminology throughout.
+Do NOT add any explanations or comments. Output ONLY the translated text.
 
 Text to translate:
 {text}
@@ -71,8 +76,8 @@ Text to translate:
 Translation:""",
 
     "marketing": """You are a marketing translator. Write in engaging, persuasive, and lively style.
-Make the content appealing to target audience. Use natural expressions.
-Only output the translated text, nothing else.
+Adapt the tone to be persuasive while staying faithful to the original message. Use natural expressions.
+Do NOT add exaggerated rhetoric or explanations not in the original. Output ONLY the translated text.
 
 Text to translate:
 {text}
@@ -80,17 +85,20 @@ Text to translate:
 Translation:""",
 
     "simple": """You are a translator specializing in simplified Chinese for general audiences.
-Use short sentences and common vocabulary. Aim for easy understanding at approximately Grade 6 reading level.
-Only output the translated text, nothing else.
+Use short sentences (no more than 20 words each). Use common vocabulary. Avoid passive voice.
+Do NOT add any explanations or comments. Output ONLY the translated text.
 
 Text to translate:
 {text}
 
 Translation:""",
 
-    "bilingual": """You are a bilingual translator. Keep English technical terms, code, and symbols in English.
-Translate surrounding text naturally. Mix Chinese and English where it improves clarity.
-Only output the translated text, nothing else.
+    "bilingual": """You are a bilingual technical translator.
+RULES:
+- Keep ONLY untranslatable terms in English (e.g., API, JSON, Git, URL).
+- Translate all surrounding text into natural simplified Chinese.
+- When helpful, use "English term (中文解释)" format for clarity.
+Do NOT add explanations outside this format. Output ONLY the translated text.
 
 Text to translate:
 {text}
@@ -98,8 +106,9 @@ Text to translate:
 Translation:""",
 
     "podcast": """You are a translator specializing in converting written text into natural spoken Chinese.
-Write as if speaking conversationally. Use natural speech patterns and expressions.
-Only output the translated text, nothing else.
+Write as if speaking conversationally. Use natural speech patterns. Use 'and', 'so', 'but' instead of formal transitions like "however" or "moreover".
+Remove formal written markers. Keep it casual and natural.
+Do NOT add any explanations or comments. Output ONLY the translated text.
 
 Text to translate:
 {text}
@@ -560,10 +569,10 @@ def translate_soup_sequential(soup, translator, source_lang: str, target_lang: s
                 translated = f"[Error: {str(e)}]"
         
         try:
-            separator = soup.new_tag('hr')
+            empty_p = BeautifulSoup('<p></p>', 'html.parser').p
             trans_block = BeautifulSoup(f'<div class="translation">{translated}</div>', 'html.parser')
-            block.insert_after(separator)
-            block.insert_after(trans_block)
+            block.insert_after(empty_p)
+            empty_p.insert_after(trans_block)
         except Exception as e:
             print(f"Insert failed: {e}")
 
