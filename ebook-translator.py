@@ -171,7 +171,7 @@ def check_paragraph_length(text: str, max_tokens: int) -> tuple[bool, int]:
     tokens = estimate_tokens(text)
     return tokens <= max_tokens, tokens
 
-def get_loaded_context_length(base_url: str) -> int:
+def get_model_info(base_url: str) -> dict:
     try:
         response = requests.get(f"{base_url}/api/v1/models", timeout=10)
         response.raise_for_status()
@@ -179,11 +179,21 @@ def get_loaded_context_length(base_url: str) -> int:
         models = data.get("models", [])
         loaded_models = [m for m in models if m.get("loaded_instances")]
         if loaded_models:
-            inst = loaded_models[0]["loaded_instances"][0]
-            return inst.get("config", {}).get("context_length", 4096)
+            model = loaded_models[0]
+            inst = model["loaded_instances"][0]
+            quant = model.get("quantization", {})
+            return {
+                "context_length": inst.get("config", {}).get("context_length", 4096),
+                "publisher": model.get("publisher", "unknown"),
+                "name": model.get("display_name", model.get("key", "unknown")),
+                "quantization": quant.get("name", "unknown"),
+            }
     except:
         pass
-    return 4096
+    return {"context_length": 4096, "publisher": "unknown", "name": "unknown", "quantization": "unknown"}
+
+def get_loaded_context_length(base_url: str) -> int:
+    return get_model_info(base_url)["context_length"]
 
 def calculate_max_para_tokens(base_url: str, source_lang: str, target_lang: str, style: str = None) -> int:
     context_length = get_loaded_context_length(base_url)
@@ -576,6 +586,27 @@ def translate_chapters(chapters: List[Dict[str, Any]], source_lang: str, target_
         soup = chapter['soup']
         translate_soup(soup, translator, source_lang, target_lang, max_para_tokens)
 
+def generate_output_filename(input_path: str, target_lang: str, model_info: dict, style: str) -> str:
+    from datetime import datetime
+    base, ext = os.path.splitext(os.path.basename(input_path))
+    
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    safe_publisher = model_info["publisher"].replace("/", "_").replace("\\", "_").replace(" ", "_")
+    safe_name = model_info["name"].replace("/", "_").replace("\\", "_").replace(" ", "_")
+    safe_quant = model_info["quantization"].replace("/", "_").replace("\\", "_").replace(" ", "_")
+    
+    base_name = f"{base}_{target_lang}_{safe_publisher}_{safe_name}_{safe_quant}_{style}_{timestamp}"
+    
+    output_path = base_name + ext
+    seq = 1
+    while os.path.exists(output_path):
+        seq_str = f"{seq:02d}"
+        output_path = f"{base_name}_{seq_str}{ext}"
+        seq += 1
+    
+    return output_path
+
 def save_translated_ebook(chapters: List[Dict[str, Any]], output_path: str, original_file: str):
     ext = get_file_extension(output_path)
     
@@ -607,14 +638,16 @@ def main():
         sys.exit(1)
     
     if args.output is None:
-        base, ext = os.path.splitext(args.input_file)
-        args.output = f"{base}.translated{ext}"
+        model_info = get_model_info(args.lm_url)
+    else:
+        model_info = None
     
     print("=" * 50)
     print("       Ebook Translator")
     print("=" * 50)
     print(f"  Input:    {args.input_file}")
-    print(f"  Output:   {args.output}")
+    if model_info:
+        print(f"  Model:    {model_info['publisher']} / {model_info['name']} ({model_info['quantization']})")
     print(f"  Source:   {args.source}")
     print(f"  Target:   {args.target}")
     print(f"  LM URL:   {args.lm_url}")
@@ -630,20 +663,24 @@ def main():
     total_text_nodes = sum(len(collect_text_nodes(c['soup'])) for c in chapters)
     print(f"  Found {len(chapters)} chapters, {total_text_nodes} text nodes")
     
-    print("\n[2/3] Translating content...")
-    context_length = get_loaded_context_length(args.lm_url)
-    max_para_tokens = calculate_max_para_tokens(args.lm_url, args.source, args.target, args.prompt_style)
-    print(f"  Model context: {context_length}, max paragraph: {max_para_tokens} tokens")
-    
     if args.prompt_style is None:
-        print("  Detecting content type...")
+        print("\n[2/3] Detecting content type...")
         sample_text = chapters[0]['soup'].get_text()[:1000] if chapters else ""
         detector = LMStudioTranslator(base_url=args.lm_url, timeout=30)
         detected_style = detect_content_type(sample_text, detector)
         args.prompt_style = detected_style
         print(f"  Detected style: {detected_style}")
     else:
-        print(f"  Prompt style:  {args.prompt_style}")
+        print(f"\n[2/3] Translating content (style: {args.prompt_style})...")
+    
+    if args.output is None:
+        args.output = generate_output_filename(args.input_file, args.target, model_info, args.prompt_style)
+    
+    print(f"  Output:   {args.output}")
+    
+    context_length = model_info["context_length"]
+    max_para_tokens = calculate_max_para_tokens(args.lm_url, args.source, args.target, args.prompt_style)
+    print(f"  Model context: {context_length}, max paragraph: {max_para_tokens} tokens")
     
     translator = LMStudioTranslator(base_url=args.lm_url, timeout=args.timeout, style=args.prompt_style)
     translate_chapters(chapters, args.source, args.target, translator, max_para_tokens)
