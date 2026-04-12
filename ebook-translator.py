@@ -185,13 +185,14 @@ def get_model_info(base_url: str) -> dict:
             quant = model.get("quantization", {})
             return {
                 "context_length": inst.get("config", {}).get("context_length", 4096),
+                "parallel": inst.get("config", {}).get("parallel", 1),
                 "publisher": model.get("publisher", "unknown"),
                 "name": model.get("display_name", model.get("key", "unknown")),
                 "quantization": quant.get("name", "unknown"),
             }
     except Exception as e:
         warnings.warn(f"Failed to get model info: {e}")
-    return {"context_length": 4096, "publisher": "unknown", "name": "unknown", "quantization": "unknown"}
+    return {"context_length": 4096, "parallel": 1, "publisher": "unknown", "name": "unknown", "quantization": "unknown"}
 
 def get_loaded_context_length(base_url: str) -> int:
     return get_model_info(base_url)["context_length"]
@@ -716,10 +717,7 @@ def main():
         print(f"[Error] File not found: {args.input_file}")
         sys.exit(1)
     
-    if args.output is None:
-        model_info = get_model_info(args.lm_url)
-    else:
-        model_info = None
+    model_info = get_model_info(args.lm_url)
     
     print("=" * 50)
     print("       Ebook Translator")
@@ -753,8 +751,12 @@ def main():
         print(f"\n[2/4] Translating content (style: {args.prompt_style})...")
     
     context_length = model_info["context_length"]
+    max_parallel = model_info.get("parallel", 1)
+    if args.parallel > max_parallel:
+        warnings.warn(f"Requested parallel={args.parallel} but model max is {max_parallel}, limiting to {max_parallel}")
+        args.parallel = max_parallel
     max_para_tokens = calculate_max_para_tokens(args.lm_url, args.source, args.target, args.prompt_style)
-    print(f"  Model context: {context_length}, max paragraph: {max_para_tokens} tokens")
+    print(f"  Model context: {context_length}, max parallel: {args.parallel}, max paragraph: {max_para_tokens} tokens")
     
     translator = LMStudioTranslator(base_url=args.lm_url, timeout=args.timeout, style=args.prompt_style)
     
