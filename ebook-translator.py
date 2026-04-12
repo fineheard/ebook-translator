@@ -586,13 +586,14 @@ def translate_chapters(chapters: List[Dict[str, Any]], source_lang: str, target_
         soup = chapter['soup']
         translate_soup(soup, translator, source_lang, target_lang, max_para_tokens)
 
-def generate_output_filename(translated_filename: str, model_info: dict, style: str) -> str:
+def generate_output_filename(original_filename: str, translated_filename: str, model_info: dict, style: str) -> str:
     from datetime import datetime
     import re
     
-    safe_filename = re.sub(r'[\\/:*?"<>|]', '_', translated_filename)
-    if len(safe_filename) > 100:
-        safe_filename = safe_filename[:100]
+    safe_original = re.sub(r'[\\/:*?"<>|]', '_', original_filename)
+    safe_translated = re.sub(r'[\\/:*?"<>|]', '_', translated_filename)
+    if len(safe_translated) > 100:
+        safe_translated = safe_translated[:100]
     
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     
@@ -600,7 +601,7 @@ def generate_output_filename(translated_filename: str, model_info: dict, style: 
     safe_name = model_info["name"].replace("/", "_").replace("\\", "_").replace(" ", "_")
     safe_quant = model_info["quantization"].replace("/", "_").replace("\\", "_").replace(" ", "_")
     
-    base_name = f"{safe_filename}_{safe_publisher}_{safe_name}_{safe_quant}_{style}_{timestamp}"
+    base_name = f"{safe_original}_{safe_translated}_{safe_publisher}_{safe_name}_{safe_quant}_{style}_{timestamp}"
     
     output_path = base_name + ".epub"
     seq = 1
@@ -689,7 +690,7 @@ def main():
         name_result = translator.translate(original_name, args.source, args.target)
         translated_name = name_result.get("text", original_name)
         print(f"  Filename: {original_name} → {translated_name}")
-        args.output = generate_output_filename(translated_name, model_info, args.prompt_style)
+        args.output = generate_output_filename(original_name, translated_name, model_info, args.prompt_style)
     
     print(f"  Output:   {args.output}")
     
