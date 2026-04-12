@@ -106,7 +106,48 @@ Text to translate:
 Translation:"""
 }
 
-DEFAULT_PROMPT_STYLE = "general"
+DEFAULT_PROMPT_STYLE = None
+
+DETECTION_PROMPT = """Read the text sample below and determine the most appropriate translation style.
+
+Choose ONE from:
+- technical: software, programming, IT, engineering docs
+- academic: research papers, scholarly articles
+- literary: novels, stories, poetry, creative writing
+- news: journalism, reports
+- business: corporate documents, professional writing
+- marketing: promotional content, advertisements
+- general: everyday content, mixed topics
+
+Text sample:
+{text}
+
+Respond with ONLY a single word (the style name):"""
+
+DETECTION_SAMPLE_SIZE = 500
+
+def detect_content_type(text_sample: str, translator) -> str:
+    payload = {
+        "messages": [
+            {"role": "user", "content": DETECTION_PROMPT.format(text=text_sample[:DETECTION_SAMPLE_SIZE])}
+        ],
+        "temperature": 0.1,
+        "max_tokens": 20
+    }
+    try:
+        response = requests.post(
+            f"{translator.base_url}/v1/chat/completions",
+            json=payload,
+            timeout=30
+        )
+        if response.status_code == 200:
+            result = response.json()
+            detected = result["choices"][0]["message"]["content"].strip().lower()
+            if detected in PROMPT_STYLES:
+                return detected
+    except:
+        pass
+    return "general"
 
 def get_file_extension(file_path: str) -> str:
     return os.path.splitext(file_path)[1].lower()
@@ -117,8 +158,12 @@ def estimate_tokens(text: str) -> int:
     result = int(chinese_chars / 1.5 + other_chars / 4)
     return max(1, result) if text.strip() else 0
 
-def estimate_prompt_tokens(text: str, source_lang: str, target_lang: str, style: str = DEFAULT_PROMPT_STYLE) -> int:
-    template = PROMPT_STYLES.get(style, PROMPT_STYLES[DEFAULT_PROMPT_STYLE])
+def get_prompt_style(style: str) -> str:
+    return style if style else "general"
+
+def estimate_prompt_tokens(text: str, source_lang: str, target_lang: str, style: str = None) -> int:
+    actual_style = get_prompt_style(style)
+    template = PROMPT_STYLES[actual_style]
     prompt = template.format(source_lang=source_lang, target_lang=target_lang, text=text)
     return estimate_tokens(prompt)
 
@@ -140,7 +185,7 @@ def get_loaded_context_length(base_url: str) -> int:
         pass
     return 4096
 
-def calculate_max_para_tokens(base_url: str, source_lang: str, target_lang: str, style: str = DEFAULT_PROMPT_STYLE) -> int:
+def calculate_max_para_tokens(base_url: str, source_lang: str, target_lang: str, style: str = None) -> int:
     context_length = get_loaded_context_length(base_url)
     sample_text = "a" * 100
     prompt_tokens = estimate_prompt_tokens(sample_text, source_lang, target_lang, style)
@@ -184,7 +229,7 @@ class EpubParser:
             script.decompose()
 
 class LMStudioTranslator:
-    def __init__(self, base_url: str = "http://localhost:1234", timeout: int = 3600, max_response_tokens: int = None, style: str = DEFAULT_PROMPT_STYLE):
+    def __init__(self, base_url: str = "http://localhost:1234", timeout: int = 3600, max_response_tokens: int = None, style: str = None):
         self.base_url = base_url
         self.timeout = timeout
         self.style = style
@@ -198,7 +243,8 @@ class LMStudioTranslator:
     
     def translate(self, text: str, source_lang: str, target_lang: str) -> dict:
         import time
-        template = PROMPT_STYLES.get(self.style, PROMPT_STYLES[DEFAULT_PROMPT_STYLE])
+        actual_style = get_prompt_style(self.style)
+        template = PROMPT_STYLES[actual_style]
         prompt = template.format(
             source_lang=source_lang,
             target_lang=target_lang,
@@ -550,9 +596,9 @@ def main():
     parser.add_argument('--lm-url', default=LM_STUDIO_URL, help=f'LM Studio API URL (default: {LM_STUDIO_URL})')
     parser.add_argument('--timeout', type=int, default=3600, help='Translation timeout in seconds (default: 3600)')
     parser.add_argument('-p', '--parallel', type=int, default=4, help='Number of parallel translation workers (default: 4)')
-    parser.add_argument('--prompt-style', default=DEFAULT_PROMPT_STYLE,
+    parser.add_argument('--prompt-style', default=None,
                         choices=list(PROMPT_STYLES.keys()),
-                        help=f'Translation style (default: {DEFAULT_PROMPT_STYLE})')
+                        help='Translation style (default: auto-detect)')
     
     args = parser.parse_args()
     
@@ -588,7 +634,17 @@ def main():
     context_length = get_loaded_context_length(args.lm_url)
     max_para_tokens = calculate_max_para_tokens(args.lm_url, args.source, args.target, args.prompt_style)
     print(f"  Model context: {context_length}, max paragraph: {max_para_tokens} tokens")
-    print(f"  Prompt style:  {args.prompt_style}")
+    
+    if args.prompt_style is None:
+        print("  Detecting content type...")
+        sample_text = chapters[0]['soup'].get_text()[:1000] if chapters else ""
+        detector = LMStudioTranslator(base_url=args.lm_url, timeout=30)
+        detected_style = detect_content_type(sample_text, detector)
+        args.prompt_style = detected_style
+        print(f"  Detected style: {detected_style}")
+    else:
+        print(f"  Prompt style:  {args.prompt_style}")
+    
     translator = LMStudioTranslator(base_url=args.lm_url, timeout=args.timeout, style=args.prompt_style)
     translate_chapters(chapters, args.source, args.target, translator, max_para_tokens)
     
