@@ -2,6 +2,7 @@ import sys
 import io
 import os
 import argparse
+import warnings
 from typing import List, Dict, Any
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
@@ -145,8 +146,8 @@ def detect_content_type(text_sample: str, translator) -> str:
             detected = result["choices"][0]["message"]["content"].strip().lower()
             if detected in PROMPT_STYLES:
                 return detected
-    except:
-        pass
+    except Exception as e:
+        warnings.warn(f"Content type detection failed: {e}")
     return "general"
 
 def get_file_extension(file_path: str) -> str:
@@ -188,8 +189,8 @@ def get_model_info(base_url: str) -> dict:
                 "name": model.get("display_name", model.get("key", "unknown")),
                 "quantization": quant.get("name", "unknown"),
             }
-    except:
-        pass
+    except Exception as e:
+        warnings.warn(f"Failed to get model info: {e}")
     return {"context_length": 4096, "publisher": "unknown", "name": "unknown", "quantization": "unknown"}
 
 def get_loaded_context_length(base_url: str) -> int:
@@ -239,10 +240,11 @@ class EpubParser:
             script.decompose()
 
 class LMStudioTranslator:
-    def __init__(self, base_url: str = "http://localhost:1234", timeout: int = 3600, max_response_tokens: int = None, style: str = None):
+    def __init__(self, base_url: str = "http://localhost:1234", timeout: int = 3600, max_response_tokens: int = None, style: str = None, max_retries: int = 3):
         self.base_url = base_url
         self.timeout = timeout
         self.style = style
+        self.max_retries = max_retries
         self.total_tokens = 0
         self.total_time = 0.0
         if max_response_tokens is None:
@@ -270,60 +272,68 @@ class LMStudioTranslator:
             "max_tokens": self.max_response_tokens
         }
         
-        start_time = time.time()
-        try:
-            response = requests.post(
-                f"{self.base_url}/v1/chat/completions",
-                json=payload,
-                timeout=self.timeout
-            )
-            
-            if response.status_code != 200:
-                try:
-                    error_data = response.json()
-                    if "error" in error_data:
-                        error_msg = error_data["error"].get("message", str(error_data["error"]))
-                        if "no models loaded" in error_msg.lower():
-                            raise RuntimeError(f"LM Studio error: {error_msg}\n\nPlease load a model in LM Studio first!")
-                        raise RuntimeError(f"LM Studio error: {error_msg}")
-                except RuntimeError:
-                    raise
-                except:
-                    pass
-                raise HTTPError(f"HTTP error: {response.status_code}")
-            
-            data = response.json()
-            
-            if "error" in data:
-                error_msg = data["error"].get("message", str(data["error"]))
-                raise RuntimeError(f"LM Studio error: {error_msg}")
-            
-            elapsed = time.time() - start_time
-            
-            usage = data.get("usage", {})
-            completion_tokens = usage.get("completion_tokens", 0)
-            total_tokens = usage.get("total_tokens", prompt_tokens + completion_tokens)
-            
-
-            
-            self.total_tokens += total_tokens
-            self.total_time += elapsed
-            
-            return {
-                "text": data["choices"][0]["message"]["content"].strip(),
-                "prompt_tokens": prompt_tokens,
-                "completion_tokens": completion_tokens,
-                "total_tokens": total_tokens,
-                "elapsed": elapsed
-            }
-        except requests.exceptions.ConnectionError:
-            raise ConnectionError(f"Cannot connect to LM Studio at {self.base_url}")
-        except Timeout:
-            raise TimeoutError("Translation request timed out")
-        except (HTTPError, RuntimeError):
-            raise
-        except Exception as e:
-            raise ValueError(f"Unexpected error: {str(e)}")
+        last_error = None
+        for attempt in range(self.max_retries):
+            start_time = time.time()
+            try:
+                response = requests.post(
+                    f"{self.base_url}/v1/chat/completions",
+                    json=payload,
+                    timeout=self.timeout
+                )
+                
+                if response.status_code != 200:
+                    try:
+                        error_data = response.json()
+                        if "error" in error_data:
+                            error_msg = error_data["error"].get("message", str(error_data["error"]))
+                            if "no models loaded" in error_msg.lower():
+                                raise RuntimeError(f"LM Studio error: {error_msg}\n\nPlease load a model in LM Studio first!")
+                            raise RuntimeError(f"LM Studio error: {error_msg}")
+                    except RuntimeError:
+                        raise
+                    except Exception as e:
+                        warnings.warn(f"Failed to parse error response: {e}")
+                    raise HTTPError(f"HTTP error: {response.status_code}")
+                
+                data = response.json()
+                
+                if "error" in data:
+                    error_msg = data["error"].get("message", str(data["error"]))
+                    raise RuntimeError(f"LM Studio error: {error_msg}")
+                
+                elapsed = time.time() - start_time
+                
+                usage = data.get("usage", {})
+                completion_tokens = usage.get("completion_tokens", 0)
+                total_tokens = usage.get("total_tokens", prompt_tokens + completion_tokens)
+                
+                self.total_tokens += total_tokens
+                self.total_time += elapsed
+                
+                return {
+                    "text": data["choices"][0]["message"]["content"].strip(),
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": completion_tokens,
+                    "total_tokens": total_tokens,
+                    "elapsed": elapsed
+                }
+            except requests.exceptions.ConnectionError:
+                last_error = ConnectionError(f"Cannot connect to LM Studio at {self.base_url}")
+                warnings.warn(f"Attempt {attempt + 1}/{self.max_retries} failed: {last_error}")
+                continue
+            except Timeout:
+                last_error = TimeoutError("Translation request timed out")
+                warnings.warn(f"Attempt {attempt + 1}/{self.max_retries} failed: {last_error}")
+                continue
+            except (HTTPError, RuntimeError):
+                raise
+            except Exception as e:
+                last_error = ValueError(f"Unexpected error: {str(e)}")
+                warnings.warn(f"Attempt {attempt + 1}/{self.max_retries} failed: {last_error}")
+                continue
+        
+        raise last_error
 
 def split_long_paragraph(text: str, max_tokens: int, estimate_fn) -> List[str]:
     import re
@@ -410,14 +420,6 @@ class EpubExporter:
             shutil.move(out_tmp, output_path)
         
         print(f"  Export complete", flush=True)
-    
-    def create_chapter_content(self, original_html: bytes, translated_text: str) -> str:
-        soup = BeautifulSoup(original_html, 'html.parser')
-        
-        for p in soup.find_all('p'):
-            p.string = translated_text
-        
-        return str(soup)
 
 def parse_ebook(file_path: str) -> List[Dict[str, Any]]:
     ext = get_file_extension(file_path)
@@ -575,16 +577,88 @@ def translate_soup_sequential(soup, translator, source_lang: str, target_lang: s
         except Exception as e:
             print(f"Insert failed: {e}")
 
-def translate_soup(soup, translator, source_lang: str, target_lang: str, max_para_tokens: int) -> None:
-    return translate_soup_sequential(soup, translator, source_lang, target_lang, max_para_tokens)
+def translate_soup_parallel(soup, translator, source_lang: str, target_lang: str, max_para_tokens: int, max_workers: int = 4) -> None:
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    
+    blocks = collect_block_elements(soup)
+    total_blocks = len(blocks)
+    print(f"  {total_blocks} blocks to translate (parallel, {max_workers} workers)")
+    
+    block_texts = []
+    for block in blocks:
+        text = block.get_text().strip()
+        if text:
+            block_texts.append((block, text))
+    
+    total = len(block_texts)
+    results = {}
+    
+    def translate_block(index_text):
+        idx, (block, text) = index_text
+        tokens = estimate_tokens(text)
+        
+        if tokens > max_para_tokens:
+            chunks = split_long_paragraph(text, max_para_tokens, estimate_tokens)
+            trans_results = []
+            for chunk in chunks:
+                try:
+                    result = translator.translate(chunk, source_lang, target_lang)
+                    trans_results.append(result["text"])
+                except Exception as e:
+                    trans_results.append(f"[Error: {str(e)}]")
+            translated = ''.join(trans_results)
+        else:
+            try:
+                result = translator.translate(text, source_lang, target_lang)
+                translated = result.get("text", "")
+                if "no models loaded" in translated.lower():
+                    print(f"\n[ERROR] No model loaded in LM Studio.")
+                    raise SystemExit(1)
+            except SystemExit:
+                raise
+            except Exception as e:
+                translated = f"[Error: {str(e)}]"
+        
+        return idx, block, translated, tokens
+    
+    completed = 0
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(translate_block, (i, bt)): i for i, bt in enumerate(block_texts)}
+        for future in as_completed(futures):
+            try:
+                idx, block, translated, tokens = future.result()
+                results[idx] = (block, translated, tokens)
+                completed += 1
+                print(f"    [{completed}/{total}] {tokens} tokens... OK", flush=True)
+            except SystemExit:
+                raise
+            except Exception as e:
+                print(f"    Block failed: {e}", flush=True)
+    
+    print(f"  Applying translations...")
+    for idx in sorted(results.keys()):
+        block, translated, tokens = results[idx]
+        try:
+            empty_p = soup.new_tag('p')
+            trans_block = BeautifulSoup(f'<div class="translation">{translated}</div>', 'html.parser')
+            block.insert_after(empty_p)
+            block.insert_after(trans_block)
+        except Exception as e:
+            print(f"    Insert failed: {e}")
 
-def translate_chapters(chapters: List[Dict[str, Any]], source_lang: str, target_lang: str, translator: LMStudioTranslator, max_para_tokens: int) -> None:
+def translate_soup(soup, translator, source_lang: str, target_lang: str, max_para_tokens: int, parallel: int = 1) -> None:
+    if parallel > 1:
+        translate_soup_parallel(soup, translator, source_lang, target_lang, max_para_tokens, parallel)
+    else:
+        translate_soup_sequential(soup, translator, source_lang, target_lang, max_para_tokens)
+
+def translate_chapters(chapters: List[Dict[str, Any]], source_lang: str, target_lang: str, translator: LMStudioTranslator, max_para_tokens: int, parallel: int = 1) -> None:
     total_chapters = len(chapters)
     
     for i, chapter in enumerate(chapters):
         print(f"\n  Chapter {i + 1}/{total_chapters}:")
         soup = chapter['soup']
-        translate_soup(soup, translator, source_lang, target_lang, max_para_tokens)
+        translate_soup(soup, translator, source_lang, target_lang, max_para_tokens, parallel)
 
 def generate_output_filename(original_filename: str, translated_filename: str, model_info: dict, style: str) -> str:
     from datetime import datetime
@@ -695,7 +769,7 @@ def main():
     print(f"  Output:   {args.output}")
     
     print("\n[3/4] Translating chapters...")
-    translate_chapters(chapters, args.source, args.target, translator, max_para_tokens)
+    translate_chapters(chapters, args.source, args.target, translator, max_para_tokens, args.parallel)
     
     print("\n[4/4] Saving translated ebook...")
     try:
