@@ -658,7 +658,7 @@ def main():
     print(f"  LM URL:   {args.lm_url}")
     print("=" * 50)
     
-    print("\n[1/3] Parsing ebook...")
+    print("\n[1/4] Parsing ebook...")
     try:
         chapters = parse_ebook(args.input_file)
     except Exception as e:
@@ -669,14 +669,14 @@ def main():
     print(f"  Found {len(chapters)} chapters, {total_text_nodes} text nodes")
     
     if args.prompt_style is None:
-        print("\n[2/3] Detecting content type...")
+        print("\n[2/4] Detecting content type...")
         sample_text = chapters[0]['soup'].get_text()[:1000] if chapters else ""
         detector = LMStudioTranslator(base_url=args.lm_url, timeout=30)
         detected_style = detect_content_type(sample_text, detector)
         args.prompt_style = detected_style
         print(f"  Detected style: {detected_style}")
     else:
-        print(f"\n[2/3] Translating content (style: {args.prompt_style})...")
+        print(f"\n[2/4] Translating content (style: {args.prompt_style})...")
     
     context_length = model_info["context_length"]
     max_para_tokens = calculate_max_para_tokens(args.lm_url, args.source, args.target, args.prompt_style)
@@ -694,7 +694,10 @@ def main():
     
     print(f"  Output:   {args.output}")
     
-    print("\n[3/3] Saving translated ebook...")
+    print("\n[3/4] Translating chapters...")
+    translate_chapters(chapters, args.source, args.target, translator, max_para_tokens)
+    
+    print("\n[4/4] Saving translated ebook...")
     try:
         save_translated_ebook(chapters, args.output, args.input_file)
     except Exception as e:
