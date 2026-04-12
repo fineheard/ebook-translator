@@ -578,99 +578,16 @@ def translate_soup_sequential(soup, translator, source_lang: str, target_lang: s
         except Exception as e:
             print(f"Insert failed: {e}")
 
-def translate_soup_parallel(soup, translator, source_lang: str, target_lang: str, max_para_tokens: int, max_workers: int = 4) -> None:
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-    
-    blocks = collect_block_elements(soup)
-    total_blocks = len(blocks)
-    print(f"  {total_blocks} blocks to translate (parallel, {max_workers} workers)")
-    
-    block_texts = []
-    for block in blocks:
-        text = block.get_text().strip()
-        if text:
-            block_texts.append((block, text))
-    
-    total = len(block_texts)
-    results = {}
-    total_time = 0.0
-    total_tokens_used = 0
-    
-    def translate_block(index_text):
-        idx, (block, text) = index_text
-        tokens = estimate_tokens(text)
-        elapsed = 0.0
-        tokens_used = 0
-        translated = ""
-        
-        if tokens > max_para_tokens:
-            chunks = split_long_paragraph(text, max_para_tokens, estimate_tokens)
-            trans_results = []
-            for chunk in chunks:
-                try:
-                    result = translator.translate(chunk, source_lang, target_lang)
-                    trans_results.append(result["text"])
-                    elapsed += result.get("elapsed", 0.0)
-                    tokens_used += result.get("total_tokens", 0)
-                except Exception as e:
-                    trans_results.append(f"[Error: {str(e)}]")
-            translated = ''.join(trans_results)
-        else:
-            try:
-                result = translator.translate(text, source_lang, target_lang)
-                translated = result.get("text", "")
-                elapsed = result.get("elapsed", 0.0)
-                tokens_used = result.get("total_tokens", 0)
-                if "no models loaded" in translated.lower():
-                    print(f"\n[ERROR] No model loaded in LM Studio.")
-                    raise SystemExit(1)
-            except SystemExit:
-                raise
-            except Exception as e:
-                translated = f"[Error: {str(e)}]"
-        
-        return idx, block, translated, tokens, tokens_used, elapsed
-    
-    completed = 0
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(translate_block, (i, bt)): i for i, bt in enumerate(block_texts)}
-        for future in as_completed(futures):
-            try:
-                idx, block, translated, tokens, tokens_used, elapsed = future.result()
-                results[idx] = (block, translated, tokens, tokens_used, elapsed)
-                total_time += elapsed
-                total_tokens_used += tokens_used
-                completed += 1
-                print(f"    [{completed}/{total}] {tokens} tokens... OK, {tokens_used} tokens, {format_time(elapsed)}", flush=True)
-            except SystemExit:
-                raise
-            except Exception as e:
-                print(f"    Block failed: {e}", flush=True)
-    
-    print(f"  Applying translations...")
-    for idx in sorted(results.keys()):
-        block, translated, tokens, tokens_used, elapsed = results[idx]
-        try:
-            empty_p = soup.new_tag('p')
-            trans_block = BeautifulSoup(f'<div class="translation">{translated}</div>', 'html.parser')
-            block.insert_after(empty_p)
-            block.insert_after(trans_block)
-        except Exception as e:
-            print(f"    Insert failed: {e}")
+def translate_soup(soup, translator, source_lang: str, target_lang: str, max_para_tokens: int) -> None:
+    return translate_soup_sequential(soup, translator, source_lang, target_lang, max_para_tokens)
 
-def translate_soup(soup, translator, source_lang: str, target_lang: str, max_para_tokens: int, parallel: int = 1) -> None:
-    if parallel > 1:
-        translate_soup_parallel(soup, translator, source_lang, target_lang, max_para_tokens, parallel)
-    else:
-        translate_soup_sequential(soup, translator, source_lang, target_lang, max_para_tokens)
-
-def translate_chapters(chapters: List[Dict[str, Any]], source_lang: str, target_lang: str, translator: LMStudioTranslator, max_para_tokens: int, parallel: int = 1) -> None:
+def translate_chapters(chapters: List[Dict[str, Any]], source_lang: str, target_lang: str, translator: LMStudioTranslator, max_para_tokens: int) -> None:
     total_chapters = len(chapters)
     
     for i, chapter in enumerate(chapters):
         print(f"\n  Chapter {i + 1}/{total_chapters}:")
         soup = chapter['soup']
-        translate_soup(soup, translator, source_lang, target_lang, max_para_tokens, parallel)
+        translate_soup(soup, translator, source_lang, target_lang, max_para_tokens)
 
 def generate_output_filename(original_filename: str, translated_filename: str, model_info: dict, style: str) -> str:
     from datetime import datetime
@@ -717,7 +634,6 @@ def main():
     parser.add_argument('-t', '--target', default='Chinese', help='Target language (default: Chinese)')
     parser.add_argument('--lm-url', default=LM_STUDIO_URL, help=f'LM Studio API URL (default: {LM_STUDIO_URL})')
     parser.add_argument('--timeout', type=int, default=3600, help='Translation timeout in seconds (default: 3600)')
-    parser.add_argument('-p', '--parallel', type=int, default=1, help='Number of parallel workers (default: 1, sequential)')
     parser.add_argument('--prompt-style', default=None,
                         choices=list(PROMPT_STYLES.keys()),
                         help='Translation style (default: auto-detect)')
@@ -762,12 +678,8 @@ def main():
         print(f"\n[2/4] Translating content (style: {args.prompt_style})...")
     
     context_length = model_info["context_length"]
-    max_parallel = model_info.get("parallel", 1)
-    if args.parallel > max_parallel:
-        warnings.warn(f"Requested parallel={args.parallel} but model max is {max_parallel}, limiting to {max_parallel}")
-        args.parallel = max_parallel
     max_para_tokens = calculate_max_para_tokens(args.lm_url, args.source, args.target, args.prompt_style)
-    print(f"  Model context: {context_length}, max parallel: {args.parallel}, max paragraph: {max_para_tokens} tokens")
+    print(f"  Model context: {context_length}, max paragraph: {max_para_tokens} tokens")
     
     translator = LMStudioTranslator(base_url=args.lm_url, timeout=args.timeout, style=args.prompt_style)
     
@@ -782,7 +694,7 @@ def main():
     print(f"  Output:   {args.output}")
     
     print("\n[3/4] Translating chapters...")
-    translate_chapters(chapters, args.source, args.target, translator, max_para_tokens, args.parallel)
+    translate_chapters(chapters, args.source, args.target, translator, max_para_tokens)
     
     print("\n[4/4] Saving translated ebook...")
     try:
