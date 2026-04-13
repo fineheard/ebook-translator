@@ -27,7 +27,7 @@ PROMPT_STYLES = {
         "prompt": """你是专业技术书籍翻译专家。将以下英文翻译成准确、流畅、保留技术术语的{目标语言}。
 
 【重要】代码符号必须原样保留，包括但不限于：
-= > < -> => <- -> :: /**/ -- // /* */ [ ] { } ( ) . , : ; ' " ` ~ ! @ # $ % ^ & * + - = | \\ /
+= > < -> => <- -> :: /**/ -- // /* */ [ ] {{ }} ( ) . , : ; ' " ` ~ ! @ # $ % ^ & * + - = | \\ /
 
 保留所有代码块（<code>...</code>、<pre>...</pre>）和行内代码的原始内容。
 技术术语保持一致，不要翻译变量名、函数名、类名、API 名称、协议名称等。
@@ -330,12 +330,17 @@ class EpubParser:
         if 'toc' in file_name:
             return True
         
-        epub_type = item.get('epub:type', '')
-        if 'toc' in epub_type.lower() or 'navigation' in epub_type.lower():
+        if hasattr(item, 'attributes'):
+            epub_type = item.attributes.get('epub:type', '')
+            role = item.attributes.get('role', '')
+        else:
+            epub_type = getattr(item, 'epub_type', '')
+            role = getattr(item, 'role', '')
+        
+        if epub_type and ('toc' in epub_type.lower() or 'navigation' in epub_type.lower()):
             return True
         
-        role = item.get('role', '')
-        if 'toc' in role.lower() or 'navigation' in role.lower():
+        if role and ('toc' in role.lower() or 'navigation' in role.lower()):
             return True
         
         return False
