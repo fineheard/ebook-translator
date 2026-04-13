@@ -25,12 +25,13 @@ Translation:""",
 
     "technical": """You are a technical translator specializing in software development and programming topics.
 TRANSLATION RULES:
-- Translate ALL text into {target_lang} EXCEPT the following:
-  1. Code snippets: `code`, `function_name()`, `variable`, etc.
-  2. Symbols: >, ≹, =, +, /, etc.
+- Translate ALL text into {target_lang} EXCEPT actual code blocks and inline code:
+  1. Code blocks between triple backticks (```...```) - ONLY if they exist in source
+  2. Inline code in single backticks: `code`, `function_name()`, `variable`, etc. - ONLY if in backticks
   3. Technical terms: API, JSON, URL, HTML, CSS, Git, SQL, etc.
-- Preserve whitespace and indentation inside code blocks.
-- Translate everything else, including titles, phrases, and sentences.
+- If there is NO code in the source, do NOT output any code block markers.
+- Do NOT treat regular English sentences as code.
+- Translate everything else naturally.
 Do NOT add any explanations, notes, or HTML tags. Output ONLY the translated text.
 
 Text to translate:
@@ -571,10 +572,8 @@ def translate_soup_sequential(soup, translator, source_lang: str, target_lang: s
                 translated = f"[Error: {str(e)}]"
         
         try:
-            empty_p = BeautifulSoup('<p></p>', 'html.parser').p
             trans_block = BeautifulSoup(f'<div class="ebook-trans-t" style="margin: 0.2em 0 0.3em 0; color: #555;">{translated}</div>', 'html.parser')
-            block.insert_after(empty_p)
-            empty_p.insert_after(trans_block)
+            block.insert_after(trans_block)
         except Exception as e:
             print(f"Insert failed: {e}")
 
