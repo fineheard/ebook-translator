@@ -2,10 +2,12 @@ import re
 import sys
 import io
 import os
+import json
 import argparse
 import shutil
 import warnings
 from typing import List, Dict, Any, Tuple
+from datetime import datetime
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
@@ -92,8 +94,6 @@ PROMPT_STYLES = {
     }
 }
 
-TRANSLATED_MARKER = "data-translated"
-
 DETECTION_PROMPT = """Read the text sample below and determine the most appropriate translation style.
 
 Choose ONE from:
@@ -112,15 +112,80 @@ Respond with ONLY a single word (the style name):"""
 
 DETECTION_SAMPLE_SIZE = 500
 
-def get_inprogress_path(input_file: str) -> str:
-    base, ext = os.path.splitext(input_file)
-    return f"{base}.inprogress{ext}"
+class ProgressState:
+    def __init__(self, input_file: str):
+        self.input_file = os.path.abspath(input_file)
+        self.progress_file = self.input_file + '.progress.json'
+        self.data = {
+            "input_file": self.input_file,
+            "output_file": None,
+            "inprogress_file": None,
+            "profile": None,
+            "target_lang": None,
+            "processed_chapters": [],
+            "total_chapters": 0,
+            "total_tokens": 0,
+            "total_time": 0.0,
+            "timestamp": datetime.now().isoformat()
+        }
+    
+    def load(self) -> bool:
+        if os.path.exists(self.progress_file):
+            try:
+                with open(self.progress_file, 'r', encoding='utf-8') as f:
+                    self.data = json.load(f)
+                return True
+            except Exception:
+                return False
+        return False
+    
+    def save(self) -> None:
+        self.data["timestamp"] = datetime.now().isoformat()
+        with open(self.progress_file, 'w', encoding='utf-8') as f:
+            json.dump(self.data, f, ensure_ascii=False, indent=2)
+    
+    def delete(self) -> None:
+        if os.path.exists(self.progress_file):
+            os.remove(self.progress_file)
+    
+    def is_chapter_processed(self, chapter_file_name: str) -> bool:
+        return chapter_file_name in self.data.get("processed_chapters", [])
+    
+    def mark_chapter_processed(self, chapter_file_name: str) -> None:
+        if "processed_chapters" not in self.data:
+            self.data["processed_chapters"] = []
+        if chapter_file_name not in self.data["processed_chapters"]:
+            self.data["processed_chapters"].append(chapter_file_name)
+        self.save()
+    
+    def set_output(self, output_file: str, inprogress_file: str, profile: str, target_lang: str) -> None:
+        self.data["output_file"] = output_file
+        self.data["inprogress_file"] = inprogress_file
+        self.data["profile"] = profile
+        self.data["target_lang"] = target_lang
+        self.save()
+    
+    def add_tokens(self, tokens: int) -> None:
+        self.data["total_tokens"] = self.data.get("total_tokens", 0) + tokens
+    
+    def add_time(self, time_seconds: float) -> None:
+        self.data["total_time"] = self.data.get("total_time", 0.0) + time_seconds
 
-def check_inprogress(input_file: str) -> Tuple[bool, str]:
-    inprogress_path = get_inprogress_path(input_file)
-    if os.path.exists(inprogress_path):
-        return True, inprogress_path
-    return False, ""
+def check_inprogress(input_file: str) -> Tuple[bool, str, str]:
+    progress_file = input_file + '.progress.json'
+    if os.path.exists(progress_file):
+        try:
+            with open(progress_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            inprogress_file = data.get("inprogress_file")
+            if inprogress_file and os.path.exists(inprogress_file):
+                return True, inprogress_file, progress_file
+        except Exception:
+            pass
+    inprogress_file = os.path.splitext(input_file)[0] + '.inprogress.epub'
+    if os.path.exists(inprogress_file):
+        return True, inprogress_file, progress_file
+    return False, "", ""
 
 def ask_continue_or_restart() -> bool:
     while True:
@@ -270,22 +335,6 @@ class InlineProtector:
         
         return translated_text
 
-def is_chapter_translated(chapter: Dict[str, Any]) -> bool:
-    soup = chapter.get('soup')
-    if not soup:
-        return False
-    body = soup.find('body')
-    if body and body.get(TRANSLATED_MARKER):
-        return True
-    return False
-
-def mark_chapter_translated(chapter: Dict[str, Any]) -> None:
-    soup = chapter.get('soup')
-    if soup:
-        body = soup.find('body')
-        if body:
-            body[TRANSLATED_MARKER] = 'true'
-
 class EpubParser:
     def __init__(self):
         try:
@@ -318,7 +367,7 @@ class EpubParser:
                     'file_name': getattr(item, 'file_name', item.id),
                     'item': item,
                     'soup': soup,
-                    ' protector': InlineProtector()
+                    'protector': InlineProtector()
                 })
         
         return chapters
@@ -540,10 +589,6 @@ class EpubExporter:
         import tempfile
         import zipfile
         
-        if os.path.exists(output_path):
-            print(f"  Updating inprogress file: {output_path}", flush=True)
-            shutil.copy2(output_path, output_path + '.bak')
-        
         with tempfile.TemporaryDirectory() as tmpdir:
             if os.path.exists(output_path):
                 with zipfile.ZipFile(output_path, 'r') as zf:
@@ -575,9 +620,6 @@ class EpubExporter:
                 with open(file_path, 'w', encoding='utf-8') as f:
                     f.write(modified_content)
             
-            if os.path.exists(output_path + '.bak'):
-                os.remove(output_path + '.bak')
-            
             out_tmp = output_path + '.tmp'
             with zipfile.ZipFile(out_tmp, 'w', zipfile.ZIP_DEFLATED) as zout:
                 for root, dirs, files in os.walk(tmpdir):
@@ -587,8 +629,6 @@ class EpubExporter:
                         zout.write(full_path, arc_name)
             
             shutil.move(out_tmp, output_path)
-        
-        print(f"  Saved: {output_path}", flush=True)
 
 def parse_ebook(file_path: str) -> List[Dict[str, Any]]:
     ext = get_file_extension(file_path)
@@ -751,32 +791,35 @@ def translate_soup_sequential(soup, translator, source_lang: str, target_lang: s
 def translate_soup(soup, translator, source_lang: str, target_lang: str, max_para_tokens: int, protector: InlineProtector) -> None:
     return translate_soup_sequential(soup, translator, source_lang, target_lang, max_para_tokens, protector)
 
-def translate_chapters(chapters: List[Dict[str, Any]], source_lang: str, target_lang: str, translator: LMStudioTranslator, max_para_tokens: int, exporter: EpubExporter, inprogress_path: str, original_file: str) -> None:
+def translate_chapters(chapters: List[Dict[str, Any]], source_lang: str, target_lang: str, translator: LMStudioTranslator, max_para_tokens: int, progress: ProgressState, exporter: EpubExporter, original_file: str) -> None:
     total_chapters = len(chapters)
     completed_count = 0
     
     for i, chapter in enumerate(chapters):
-        if is_chapter_translated(chapter):
-            print(f"\n  Chapter {i + 1}/{total_chapters}: [已翻译，跳过]", flush=True)
+        chapter_file_name = chapter.get('file_name', chapter.get('id', ''))
+        
+        if progress.is_chapter_processed(chapter_file_name):
+            print(f"\n  Chapter {i + 1}/{total_chapters}: [{chapter_file_name}] 已翻译，跳过", flush=True)
             completed_count += 1
             continue
         
-        print(f"\n  Chapter {i + 1}/{total_chapters}:", flush=True)
+        print(f"\n  Chapter {i + 1}/{total_chapters}: [{chapter_file_name}]", flush=True)
         soup = chapter['soup']
         protector = chapter.get('protector', InlineProtector())
         translate_soup(soup, translator, source_lang, target_lang, max_para_tokens, protector)
         
-        mark_chapter_translated(chapter)
+        progress.mark_chapter_processed(chapter_file_name)
+        progress.add_tokens(translator.total_tokens)
+        progress.add_time(translator.total_time)
         completed_count += 1
         
-        exporter.export([chapter], inprogress_path, original_file)
+        exporter.export([chapter], progress.data["inprogress_file"], original_file)
         print(f"  进度: {completed_count}/{total_chapters} 章节已保存", flush=True)
     
     print(f"\n  所有 {total_chapters} 章节翻译完成！", flush=True)
 
 def generate_output_filename(original_filename: str, target_lang: str, model_info: dict, style: str) -> str:
     from datetime import datetime
-    import re
     
     safe_original = re.sub(r'[\\/:*?"<>|]', '_', original_filename)
     safe_target = re.sub(r'[\\/:*?"<>|]', '_', target_lang)
@@ -827,13 +870,17 @@ def main():
         print(f"[Error] File not found: {args.input_file}")
         sys.exit(1)
     
-    has_inprogress, inprogress_path = check_inprogress(args.input_file)
+    has_inprogress, inprogress_path, progress_file = check_inprogress(args.input_file)
+    progress = ProgressState(args.input_file)
     
     if has_inprogress:
         continue_translation = ask_continue_or_restart()
-        if not continue_translation:
-            print(f"  删除临时文件: {inprogress_path}", flush=True)
-            os.remove(inprogress_path)
+        if continue_translation:
+            progress.load()
+        else:
+            if os.path.exists(inprogress_path):
+                os.remove(inprogress_path)
+            progress.delete()
             has_inprogress = False
             inprogress_path = ""
     
@@ -859,10 +906,14 @@ def main():
         sys.exit(1)
     
     total_text_nodes = sum(len(collect_text_nodes(c['soup'])) for c in chapters)
-    translated_count = sum(1 for c in chapters if is_chapter_translated(c))
-    print(f"  Found {len(chapters)} chapters, {total_text_nodes} text nodes")
-    if translated_count > 0:
-        print(f"  {translated_count} 章节已翻译，将跳过")
+    if has_inprogress:
+        progress.data["total_chapters"] = len(chapters)
+        progress.save()
+        processed = len(progress.data.get("processed_chapters", []))
+        print(f"  Found {len(chapters)} chapters, {total_text_nodes} text nodes")
+        print(f"  {processed} 章节已翻译，将跳过")
+    else:
+        print(f"  Found {len(chapters)} chapters, {total_text_nodes} text nodes")
     
     if args.prompt_style is None:
         print("\n[2/4] Detecting content type...")
@@ -881,7 +932,8 @@ def main():
     translator = LMStudioTranslator(base_url=args.lm_url, timeout=args.timeout, style=args.prompt_style)
     
     if has_inprogress:
-        output_path = inprogress_path
+        output_path = progress.data.get("output_file", "")
+        inprogress_path = progress.data.get("inprogress_file", "")
         print(f"  Output:   {output_path} (inprogress)")
     else:
         if args.output is None:
@@ -892,24 +944,29 @@ def main():
         output_path = args.output
         print(f"  Output:   {output_path}")
         
-        inprogress_path = get_inprogress_path(args.input_file)
+        inprogress_path = os.path.splitext(args.input_file)[0] + '.inprogress.epub'
         print(f"  创建 inprogress 文件: {inprogress_path}")
+        
+        progress.set_output(output_path, inprogress_path, args.prompt_style, args.target)
     
     exporter = EpubExporter()
     if not has_inprogress:
         exporter.export(chapters, inprogress_path, args.input_file)
     
     print("\n[3/4] Translating chapters...")
-    translate_chapters(chapters, args.source, args.target, translator, max_para_tokens, exporter, inprogress_path, args.input_file)
+    translate_chapters(chapters, args.source, args.target, translator, max_para_tokens, progress, exporter, args.input_file)
     
     print("\n[4/4] Finalizing...")
     try:
-        if output_path != inprogress_path:
-            save_translated_ebook(chapters, output_path, args.input_file)
+        final_output = progress.data.get("output_file", args.output)
+        if final_output != inprogress_path:
+            save_translated_ebook(chapters, final_output, args.input_file)
             print(f"  删除 inprogress 文件: {inprogress_path}", flush=True)
             os.remove(inprogress_path)
         else:
-            print(f"  最终文件: {output_path}")
+            print(f"  最终文件: {final_output}")
+        print(f"  删除进度文件: {progress.progress_file}", flush=True)
+        progress.delete()
     except Exception as e:
         print(f"  [Error] Failed to save ebook: {e}")
         sys.exit(1)
