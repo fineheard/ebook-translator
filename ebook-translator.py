@@ -3,6 +3,7 @@ import sys
 import io
 import os
 import argparse
+import shutil
 import warnings
 from typing import List, Dict, Any, Tuple
 
@@ -42,7 +43,7 @@ PROMPT_STYLES = {
     },
 
     "literary": {
-        "prompt": """你是专业文学翻译专家，擅长翻译英文小说。将以下英文翻译成优美、自然、保留原著情感和风格的中文。
+        "prompt": """你是专业文学翻译专家，擅长翻译英文小说。将以下英文翻译成优美，自然、保留原著情感和风格的中文。
 保留人物的语气、性格和情感色彩，对话翻译需口语化自然，关键意象和隐喻尽量保留。
 直接输出翻译结果，不要有任何思考过程、脚注、括号注释或额外说明。""",
         "temperature": 0.4
@@ -91,6 +92,8 @@ PROMPT_STYLES = {
     }
 }
 
+TRANSLATED_MARKER = "data-translated"
+
 DETECTION_PROMPT = """Read the text sample below and determine the most appropriate translation style.
 
 Choose ONE from:
@@ -108,6 +111,33 @@ Text sample:
 Respond with ONLY a single word (the style name):"""
 
 DETECTION_SAMPLE_SIZE = 500
+
+def get_inprogress_path(input_file: str) -> str:
+    base, ext = os.path.splitext(input_file)
+    return f"{base}.inprogress{ext}"
+
+def check_inprogress(input_file: str) -> Tuple[bool, str]:
+    inprogress_path = get_inprogress_path(input_file)
+    if os.path.exists(inprogress_path):
+        return True, inprogress_path
+    return False, ""
+
+def ask_continue_or_restart() -> bool:
+    while True:
+        print("\n" + "=" * 50)
+        print("  发现未完成的翻译任务")
+        print("=" * 50)
+        print("  是否继续上次的翻译？")
+        print("  [Y] 继续（跳过已翻译章节）")
+        print("  [N] 重新开始（删除临时文件）")
+        print("=" * 50)
+        choice = input("请选择 [Y/N]: ").strip().lower()
+        if choice in ['y', 'yes', '']:
+            return True
+        elif choice in ['n', 'no']:
+            return False
+        else:
+            print("无效选择，请重新输入")
 
 def detect_content_type(text_sample: str, translator) -> str:
     payload = {
@@ -227,20 +257,34 @@ class InlineProtector:
                 }
                 span.string = placeholder
                 self.styled_span_count += 1
-    
+
     def restore(self, soup, translated_text: str) -> str:
         for placeholder, content in self.mappings['code'].items():
             translated_text = translated_text.replace(placeholder, content)
         
         for placeholder, data in self.mappings['link'].items():
-            link_html = f'<a href="{data["href"]}">{data["text"]}</a>'
             translated_text = translated_text.replace(placeholder, data['text'])
         
         for placeholder, data in self.mappings['styled_span'].items():
-            span_html = f'<span class="{data["class"]}">{data["content"]}</span>'
             translated_text = translated_text.replace(placeholder, data['content'])
         
         return translated_text
+
+def is_chapter_translated(chapter: Dict[str, Any]) -> bool:
+    soup = chapter.get('soup')
+    if not soup:
+        return False
+    body = soup.find('body')
+    if body and body.get(TRANSLATED_MARKER):
+        return True
+    return False
+
+def mark_chapter_translated(chapter: Dict[str, Any]) -> None:
+    soup = chapter.get('soup')
+    if soup:
+        body = soup.find('body')
+        if body:
+            body[TRANSLATED_MARKER] = 'true'
 
 class EpubParser:
     def __init__(self):
@@ -489,16 +533,20 @@ class EpubExporter:
     
     def export(self, chapters: List[Dict[str, Any]], output_path: str, original_file: str) -> None:
         import tempfile
-        import shutil
         import zipfile
         
-        print(f"  Copying original epub...", flush=True)
-        shutil.copy2(original_file, output_path)
+        if os.path.exists(output_path):
+            print(f"  Updating inprogress file: {output_path}", flush=True)
+            shutil.copy2(output_path, output_path + '.bak')
         
-        print(f"  Extracting to temp dir...", flush=True)
         with tempfile.TemporaryDirectory() as tmpdir:
-            with zipfile.ZipFile(output_path, 'r') as zf:
-                zf.extractall(tmpdir)
+            if os.path.exists(output_path):
+                with zipfile.ZipFile(output_path, 'r') as zf:
+                    zf.extractall(tmpdir)
+            else:
+                shutil.copy2(original_file, output_path)
+                with zipfile.ZipFile(output_path, 'r') as zf:
+                    zf.extractall(tmpdir)
             
             for chapter in chapters:
                 file_name = chapter.get('file_name', chapter['id']).replace('/', os.sep)
@@ -514,7 +562,6 @@ class EpubExporter:
                         break
                 
                 if not file_path or not os.path.exists(file_path):
-                    print(f"  WARNING: Cannot find file: {file_name}", flush=True)
                     continue
                 
                 soup = chapter['soup']
@@ -522,10 +569,10 @@ class EpubExporter:
                 
                 with open(file_path, 'w', encoding='utf-8') as f:
                     f.write(modified_content)
-                
-                print(f"  Modified: {file_name} ({len(modified_content)} bytes)", flush=True)
             
-            print(f"  Repacking epub...", flush=True)
+            if os.path.exists(output_path + '.bak'):
+                os.remove(output_path + '.bak')
+            
             out_tmp = output_path + '.tmp'
             with zipfile.ZipFile(out_tmp, 'w', zipfile.ZIP_DEFLATED) as zout:
                 for root, dirs, files in os.walk(tmpdir):
@@ -536,7 +583,7 @@ class EpubExporter:
             
             shutil.move(out_tmp, output_path)
         
-        print(f"  Export complete", flush=True)
+        print(f"  Saved: {output_path}", flush=True)
 
 def parse_ebook(file_path: str) -> List[Dict[str, Any]]:
     ext = get_file_extension(file_path)
@@ -649,9 +696,6 @@ def translate_soup_sequential(soup, translator, source_lang: str, target_lang: s
             results = []
             for k, chunk in enumerate(chunks):
                 try:
-                    protected_chunk = protector.restore(soup, chunk)
-                    protected_chunk = protector.mappings  
-                    
                     protected_text = chunk
                     for placeholder, content in protector.mappings['code'].items():
                         protected_text = protected_text.replace(placeholder, content)
@@ -702,14 +746,28 @@ def translate_soup_sequential(soup, translator, source_lang: str, target_lang: s
 def translate_soup(soup, translator, source_lang: str, target_lang: str, max_para_tokens: int, protector: InlineProtector) -> None:
     return translate_soup_sequential(soup, translator, source_lang, target_lang, max_para_tokens, protector)
 
-def translate_chapters(chapters: List[Dict[str, Any]], source_lang: str, target_lang: str, translator: LMStudioTranslator, max_para_tokens: int) -> None:
+def translate_chapters(chapters: List[Dict[str, Any]], source_lang: str, target_lang: str, translator: LMStudioTranslator, max_para_tokens: int, exporter: EpubExporter, inprogress_path: str, original_file: str) -> None:
     total_chapters = len(chapters)
+    completed_count = 0
     
     for i, chapter in enumerate(chapters):
-        print(f"\n  Chapter {i + 1}/{total_chapters}:")
+        if is_chapter_translated(chapter):
+            print(f"\n  Chapter {i + 1}/{total_chapters}: [已翻译，跳过]", flush=True)
+            completed_count += 1
+            continue
+        
+        print(f"\n  Chapter {i + 1}/{total_chapters}:", flush=True)
         soup = chapter['soup']
         protector = chapter.get('protector', InlineProtector())
         translate_soup(soup, translator, source_lang, target_lang, max_para_tokens, protector)
+        
+        mark_chapter_translated(chapter)
+        completed_count += 1
+        
+        exporter.export([chapter], inprogress_path, original_file)
+        print(f"  进度: {completed_count}/{total_chapters} 章节已保存", flush=True)
+    
+    print(f"\n  所有 {total_chapters} 章节翻译完成！", flush=True)
 
 def generate_output_filename(original_filename: str, target_lang: str, model_info: dict, style: str) -> str:
     from datetime import datetime
@@ -764,6 +822,16 @@ def main():
         print(f"[Error] File not found: {args.input_file}")
         sys.exit(1)
     
+    has_inprogress, inprogress_path = check_inprogress(args.input_file)
+    
+    if has_inprogress:
+        continue_translation = ask_continue_or_restart()
+        if not continue_translation:
+            print(f"  删除临时文件: {inprogress_path}", flush=True)
+            os.remove(inprogress_path)
+            has_inprogress = False
+            inprogress_path = ""
+    
     model_info = get_model_info(args.lm_url)
     
     print("=" * 50)
@@ -779,13 +847,17 @@ def main():
     
     print("\n[1/4] Parsing ebook...")
     try:
-        chapters = parse_ebook(args.input_file)
+        working_file = inprogress_path if has_inprogress else args.input_file
+        chapters = parse_ebook(working_file)
     except Exception as e:
         print(f"  [Error] Failed to parse ebook: {e}")
         sys.exit(1)
     
     total_text_nodes = sum(len(collect_text_nodes(c['soup'])) for c in chapters)
+    translated_count = sum(1 for c in chapters if is_chapter_translated(c))
     print(f"  Found {len(chapters)} chapters, {total_text_nodes} text nodes")
+    if translated_count > 0:
+        print(f"  {translated_count} 章节已翻译，将跳过")
     
     if args.prompt_style is None:
         print("\n[2/4] Detecting content type...")
@@ -803,19 +875,36 @@ def main():
     
     translator = LMStudioTranslator(base_url=args.lm_url, timeout=args.timeout, style=args.prompt_style)
     
-    if args.output is None:
-        print("  Translating filename...")
-        original_name = os.path.splitext(os.path.basename(args.input_file))[0]
-        args.output = generate_output_filename(original_name, args.target, model_info, args.prompt_style)
+    if has_inprogress:
+        output_path = inprogress_path
+        print(f"  Output:   {output_path} (inprogress)")
+    else:
+        if args.output is None:
+            print("  Generating filename...")
+            original_name = os.path.splitext(os.path.basename(args.input_file))[0]
+            args.output = generate_output_filename(original_name, args.target, model_info, args.prompt_style)
+        
+        output_path = args.output
+        print(f"  Output:   {output_path}")
+        
+        inprogress_path = get_inprogress_path(args.input_file)
+        print(f"  创建 inprogress 文件: {inprogress_path}")
     
-    print(f"  Output:   {args.output}")
+    exporter = EpubExporter()
+    if not has_inprogress:
+        exporter.export(chapters, inprogress_path, args.input_file)
     
     print("\n[3/4] Translating chapters...")
-    translate_chapters(chapters, args.source, args.target, translator, max_para_tokens)
+    translate_chapters(chapters, args.source, args.target, translator, max_para_tokens, exporter, inprogress_path, args.input_file)
     
-    print("\n[4/4] Saving translated ebook...")
+    print("\n[4/4] Finalizing...")
     try:
-        save_translated_ebook(chapters, args.output, args.input_file)
+        if output_path != inprogress_path:
+            save_translated_ebook(chapters, output_path, args.input_file)
+            print(f"  删除 inprogress 文件: {inprogress_path}", flush=True)
+            os.remove(inprogress_path)
+        else:
+            print(f"  最终文件: {output_path}")
     except Exception as e:
         print(f"  [Error] Failed to save ebook: {e}")
         sys.exit(1)
