@@ -819,11 +819,16 @@ def translate_soup_sequential(soup, translator, source_lang: str, target_lang: s
     print(f"  Replacing original content with translations...")
     for block, translated in translations:
         try:
-            trans_block = BeautifulSoup(
+            trans_div = BeautifulSoup(
                 f'<div class="ebook-trans" style="margin: 0.2em 0 0.3em 0; color: #555;">{translated}</div>',
                 'html.parser'
-            )
-            block.insert_after(trans_block)
+            ).div
+            
+            insert_target = block.parent
+            if insert_target and insert_target.name in ['blockquote', 'aside', 'article', 'section']:
+                insert_target.insert_after(trans_div)
+            else:
+                block.insert_after(trans_div)
         except Exception as e:
             print(f"  Insert failed: {e}")
     
