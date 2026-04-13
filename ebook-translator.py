@@ -334,6 +334,25 @@ class InlineProtector:
             translated_text = translated_text.replace(placeholder, data['content'])
         
         return translated_text
+    
+    def restore_soup(self, soup) -> None:
+        for placeholder, content in self.mappings['code'].items():
+            for code in soup.find_all(['code', 'pre']):
+                if code.string == placeholder:
+                    code.string = content
+                    break
+        
+        for placeholder, data in self.mappings['link'].items():
+            for link in soup.find_all('a'):
+                if link.string == placeholder:
+                    link.string = data['text']
+                    break
+        
+        for placeholder, data in self.mappings['styled_span'].items():
+            for span in soup.find_all('span'):
+                if span.string == placeholder:
+                    span.string = data['content']
+                    break
 
 class EpubParser:
     def __init__(self):
@@ -784,6 +803,9 @@ def translate_soup_sequential(soup, translator, source_lang: str, target_lang: s
             block.insert_after(trans_block)
         except Exception as e:
             print(f"  Insert failed: {e}")
+    
+    print(f"  Restoring inline elements in original blocks...")
+    protector.restore_soup(soup)
 
 def translate_soup(soup, translator, source_lang: str, target_lang: str, max_para_tokens: int, protector: InlineProtector) -> None:
     return translate_soup_sequential(soup, translator, source_lang, target_lang, max_para_tokens, protector)
