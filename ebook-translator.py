@@ -295,7 +295,7 @@ class InlineProtector:
     def _protect_code(self, soup) -> None:
         for code in soup.find_all(['code', 'pre']):
             placeholder = f"__CODE_{self.code_count}__"
-            self.mappings['code'][placeholder] = code.decode_contents() if hasattr(code, 'decode_contents') else str(code)
+            self.mappings['code'][placeholder] = code.string if code.string else ''
             code.string = placeholder
             self.code_count += 1
     
@@ -305,7 +305,7 @@ class InlineProtector:
                 continue
             placeholder = f"__LINK_{self.link_count}__"
             self.mappings['link'][placeholder] = {
-                'text': link.decode_contents() if hasattr(link, 'decode_contents') else str(link.get_text()),
+                'text': link.string if link.string else '',
                 'href': link.get('href', '')
             }
             link.string = placeholder
@@ -317,7 +317,7 @@ class InlineProtector:
             if classes and any(c in classes for c in ['italic', 'bold', 'emphasis', 'strong']):
                 placeholder = f"__STYLE_{self.styled_span_count}__"
                 self.mappings['styled_span'][placeholder] = {
-                    'content': span.decode_contents() if hasattr(span, 'decode_contents') else str(span),
+                    'content': span.string if span.string else '',
                     'class': ' '.join(classes)
                 }
                 span.string = placeholder
