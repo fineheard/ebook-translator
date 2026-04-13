@@ -171,6 +171,26 @@ class ProgressState:
     def add_time(self, time_seconds: float) -> None:
         self.data["total_time"] = self.data.get("total_time", 0.0) + time_seconds
 
+PROMPT_LEAK_PATTERNS = [
+    "代码符号必须原样保留",
+    "代码块和行内代码的原始内容",
+    "直接输出翻译结果",
+    "不要有任何思考过程",
+    "technical prompt",
+    "system prompt",
+]
+
+def cleanup_translation(text: str) -> str:
+    text = text.strip()
+    
+    for pattern in PROMPT_LEAK_PATTERNS:
+        idx = text.find(pattern)
+        if idx > 0:
+            text = text[:idx]
+            text = text.strip()
+    
+    return text
+
 def check_inprogress(input_file: str) -> Tuple[bool, str, str]:
     progress_file = input_file + '.progress.json'
     if os.path.exists(progress_file):
@@ -492,8 +512,11 @@ class LMStudioTranslator:
                 self.total_tokens += total_tokens
                 self.total_time += elapsed
                 
+                raw_text = data["choices"][0]["message"]["content"].strip()
+                cleaned_text = cleanup_translation(raw_text)
+                
                 return {
-                    "text": data["choices"][0]["message"]["content"].strip(),
+                    "text": cleaned_text,
                     "prompt_tokens": prompt_tokens,
                     "completion_tokens": completion_tokens,
                     "total_tokens": total_tokens,
