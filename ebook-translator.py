@@ -1,3 +1,4 @@
+import re
 import sys
 import io
 import os
@@ -8,118 +9,82 @@ from typing import List, Dict, Any
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
 import requests
-from requests.exceptions import ConnectionError, Timeout, HTTPError, JSONDecodeError
+from requests.exceptions import ConnectionError, Timeout, HTTPError
 from bs4 import BeautifulSoup, NavigableString
 
 LM_STUDIO_URL = "http://localhost:1234"
 
 PROMPT_STYLES = {
-    "general": """You are a professional translator. Translate the following text from {source_lang} to {target_lang} naturally and fluently.
-Focus on clarity and readability. Preserve proper nouns, numbers, and punctuation in their original format.
-Do NOT add any explanations, notes, or comments. Output ONLY the translated text.
+    "general": {
+        "prompt": """你是专业翻译专家。将以下{源语言}翻译成自然流畅的{目标语言}。
+保持译文清晰易读，人名、地名、数字保留原文格式。
+直接输出翻译结果，不要有任何思考过程或额外说明。""",
+        "temperature": 0.3
+    },
 
-Text to translate:
-{text}
+    "technical": {
+        "prompt": """你是专业技术书籍翻译专家。将以下英文翻译成准确、流畅、保留技术术语的{目标语言}。
+保留代码块和行内代码的原始格式，技术术语保持一致。
+直接输出翻译结果，不要有任何思考过程、脚注、括号注释或多余文字。""",
+        "temperature": 0.3
+    },
 
-Translation:""",
+    "academic": {
+        "prompt": """你是专业学术翻译专家。将以下英文翻译成准确、严谨、流畅的{目标语言}。
+使用精确正式的语言，首次出现的人名提供音译（如"Transformer (Transformer)"），保留引用和参考文献的原文格式。
+直接输出翻译结果，不要有任何思考过程、脚注或额外说明。""",
+        "temperature": 0.3
+    },
 
-    "technical": """You are a technical translator specializing in software development and programming topics.
-TRANSLATION RULES:
-- Translate ALL text into {target_lang} EXCEPT actual code blocks and inline code:
-  1. Code blocks between triple backticks (```...```) - ONLY if they exist in source
-  2. Inline code in single backticks: `code`, `function_name()`, `variable`, etc. - ONLY if in backticks
-  3. Technical terms: API, JSON, URL, HTML, CSS, Git, SQL, etc.
-- If there is NO code in the source, do NOT output any code block markers.
-- Do NOT treat regular English sentences as code.
-- Translate everything else naturally.
-Do NOT add any explanations, notes, or HTML tags. Output ONLY the translated text.
+    "literary": {
+        "prompt": """你是专业文学翻译专家，擅长翻译英文小说。将以下英文翻译成优美、自然、保留原著情感和风格的中文。
+保留人物的语气、性格和情感色彩，对话翻译需口语化自然，关键意象和隐喻尽量保留。
+直接输出翻译结果，不要有任何思考过程、脚注、括号注释或额外说明。""",
+        "temperature": 0.4
+    },
 
-Text to translate:
-{text}
+    "news": {
+        "prompt": """你是专业新闻翻译专家。将以下英文翻译成清晰、客观、易读的{目标语言}。
+保持事实准确，术语规范，标题简洁。
+直接输出翻译结果，不要有任何思考过程或额外说明。""",
+        "temperature": 0.3
+    },
 
-Translation:""",
+    "business": {
+        "prompt": """你是专业商业翻译专家。将以下英文翻译成专业、正式、清晰、简洁的{目标语言}。
+使用恰当的商业术语，保持术语一致性。
+直接输出翻译结果，不要有任何思考过程或额外说明。""",
+        "temperature": 0.3
+    },
 
-    "academic": """You are an academic translator specializing in research papers and technical articles.
-Use precise, formal language. Translate technical terms accurately and maintain academic tone.
-On first occurrence of proper nouns, provide transliteration in parentheses: e.g., "Transformer model (Transformer)".
-Preserve citations and references in original format.
-Do NOT add any explanations or comments. Output ONLY the translated text.
+    "marketing": {
+        "prompt": """你是专业营销内容翻译专家。将以下英文翻译成有吸引力、有说服力、生动活泼的{目标语言}。
+保持说服力但忠实于原文信息，使用自然的表达方式。
+直接输出翻译结果，不要有任何思考过程或原文没有的夸张修辞。""",
+        "temperature": 0.4
+    },
 
-Text to translate:
-{text}
+    "simple": {
+        "prompt": """你是专业翻译专家，擅长为普通读者翻译。将以下英文翻译成简洁易懂的{目标语言}。
+使用短句（每句不超过20个词）、常见词汇，避免被动语态。
+直接输出翻译结果，不要有任何思考过程或额外说明。""",
+        "temperature": 0.3
+    },
 
-Translation:""",
+    "bilingual": {
+        "prompt": """你是双语技术翻译专家。将以下英文翻译成自然的中文。
+只保留无法翻译的术语为英文（如API、JSON、Git、URL），其他内容全部翻译成中文。如有帮助，可使用"英文术语（中文解释）"格式。
+直接输出翻译结果，不要有任何思考过程或此格式外的任何解释。""",
+        "temperature": 0.3
+    },
 
-    "literary": """You are a literary translator. Preserve the author's voice, tone, and style.
-Translate metaphors and idioms creatively to convey the same feeling in the target language.
-Maintain the rhythm and flow of the original text. Avoid changing factual content.
-Do NOT add interpretations or explanations. Output ONLY the translated text.
-
-Text to translate:
-{text}
-
-Translation:""",
-
-    "news": """You are a news translator. Write in clear, objective, and informative style.
-Prioritize accuracy of facts and terminology. Keep headlines concise. Handle titles separately.
-Do NOT add any explanations or comments. Output ONLY the translated text.
-
-Text to translate:
-{text}
-
-Translation:""",
-
-    "business": """You are a business translator. Write in professional, formal yet clear style.
-Use appropriate business terminology. Be concise and impactful. Use consistent terminology throughout.
-Do NOT add any explanations or comments. Output ONLY the translated text.
-
-Text to translate:
-{text}
-
-Translation:""",
-
-    "marketing": """You are a marketing translator. Write in engaging, persuasive, and lively style.
-Adapt the tone to be persuasive while staying faithful to the original message. Use natural expressions.
-Do NOT add exaggerated rhetoric or explanations not in the original. Output ONLY the translated text.
-
-Text to translate:
-{text}
-
-Translation:""",
-
-    "simple": """You are a translator specializing in simplified Chinese for general audiences.
-Use short sentences (no more than 20 words each). Use common vocabulary. Avoid passive voice.
-Do NOT add any explanations or comments. Output ONLY the translated text.
-
-Text to translate:
-{text}
-
-Translation:""",
-
-    "bilingual": """You are a bilingual technical translator.
-RULES:
-- Keep ONLY untranslatable terms in English (e.g., API, JSON, Git, URL).
-- Translate all surrounding text into natural simplified Chinese.
-- When helpful, use "English term (中文解释)" format for clarity.
-Do NOT add explanations outside this format. Output ONLY the translated text.
-
-Text to translate:
-{text}
-
-Translation:""",
-
-    "podcast": """You are a translator specializing in converting written text into natural spoken Chinese.
-Write as if speaking conversationally. Use natural speech patterns. Use 'and', 'so', 'but' instead of formal transitions like "however" or "moreover".
-Remove formal written markers. Keep it casual and natural.
-Do NOT add any explanations or comments. Output ONLY the translated text.
-
-Text to translate:
-{text}
-
-Translation:"""
+    "podcast": {
+        "prompt": """你是专业翻译专家，擅长将书面文本转换为自然口语化的中文。
+像说话一样自然流畅，使用"和"、"所以"、"但是"等自然连接词，移除正式书面标记。
+直接输出翻译结果，不要有任何思考过程或额外说明。""",
+        "temperature": 0.4
+    }
 }
-
-DEFAULT_PROMPT_STYLE = None
 
 DETECTION_PROMPT = """Read the text sample below and determine the most appropriate translation style.
 
@@ -176,13 +141,8 @@ def get_prompt_style(style: str) -> str:
 
 def estimate_prompt_tokens(text: str, source_lang: str, target_lang: str, style: str = None) -> int:
     actual_style = get_prompt_style(style)
-    template = PROMPT_STYLES[actual_style]
-    prompt = template.format(source_lang=source_lang, target_lang=target_lang, text=text)
-    return estimate_tokens(prompt)
-
-def check_paragraph_length(text: str, max_tokens: int) -> tuple[bool, int]:
-    tokens = estimate_tokens(text)
-    return tokens <= max_tokens, tokens
+    system_prompt = PROMPT_STYLES[actual_style]["prompt"].format(源语言=source_lang, 目标语言=target_lang)
+    return estimate_tokens(system_prompt + text)
 
 def get_model_info(base_url: str) -> dict:
     try:
@@ -269,19 +229,20 @@ class LMStudioTranslator:
     def translate(self, text: str, source_lang: str, target_lang: str) -> dict:
         import time
         actual_style = get_prompt_style(self.style)
-        template = PROMPT_STYLES[actual_style]
-        prompt = template.format(
-            source_lang=source_lang,
-            target_lang=target_lang,
-            text=text
+        style_config = PROMPT_STYLES[actual_style]
+        system_prompt = style_config["prompt"].format(
+            源语言=source_lang,
+            目标语言=target_lang
         )
-        prompt_tokens = estimate_tokens(prompt)
+        
+        prompt_tokens = estimate_tokens(system_prompt + text)
         
         payload = {
             "messages": [
-                {"role": "user", "content": prompt}
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": text}
             ],
-            "temperature": 0.1,
+            "temperature": style_config["temperature"],
             "max_tokens": self.max_response_tokens
         }
         
@@ -349,7 +310,6 @@ class LMStudioTranslator:
         raise last_error
 
 def split_long_paragraph(text: str, max_tokens: int, estimate_fn) -> List[str]:
-    import re
     sentence_end = re.compile(r'[。！？.!?]+')
     sentences = []
     current = []
@@ -478,57 +438,12 @@ def collect_block_elements(soup) -> list:
         for elem in soup.find_all(tag):
             if elem.find_parent(SKIP_TAGS):
                 continue
-            if elem.find(SKIP_TAGS):
+            if elem.find(BLOCK_TAGS):
                 continue
             text = elem.get_text().strip()
             if text and len(text) > 1:
                 blocks.append(elem)
     return blocks
-
-def translate_node(text: str, source_lang: str, target_lang: str, translator, max_para_tokens: int) -> dict:
-    tokens = estimate_tokens(text)
-    
-    if tokens > max_para_tokens:
-        chunks = split_long_paragraph(text, max_para_tokens, estimate_tokens)
-        results = []
-        total_tokens = 0
-        total_time = 0.0
-        for chunk in chunks:
-            try:
-                result = translator.translate(chunk, source_lang, target_lang)
-                results.append(result["text"])
-                total_tokens += result.get("total_tokens", 0)
-                total_time += result.get("elapsed", 0.0)
-            except Exception as e:
-                results.append(f"[Error: {str(e)}]")
-        return {
-            "original": text,
-            "translated": ''.join(results),
-            "tokens": tokens,
-            "total_tokens": total_tokens,
-            "elapsed": total_time,
-            "split": True
-        }
-    else:
-        try:
-            result = translator.translate(text, source_lang, target_lang)
-            return {
-                "original": text,
-                "translated": result.get("text", ""),
-                "tokens": tokens,
-                "total_tokens": result.get("total_tokens", 0),
-                "elapsed": result.get("elapsed", 0.0),
-                "split": False
-            }
-        except Exception as e:
-            return {
-                "original": text,
-                "translated": f"[Error: {str(e)}]",
-                "tokens": tokens,
-                "total_tokens": 0,
-                "elapsed": 0.0,
-                "split": False
-            }
 
 def translate_soup_sequential(soup, translator, source_lang: str, target_lang: str, max_para_tokens: int) -> None:
     blocks = collect_block_elements(soup)
@@ -588,14 +503,12 @@ def translate_chapters(chapters: List[Dict[str, Any]], source_lang: str, target_
         soup = chapter['soup']
         translate_soup(soup, translator, source_lang, target_lang, max_para_tokens)
 
-def generate_output_filename(original_filename: str, translated_filename: str, model_info: dict, style: str) -> str:
+def generate_output_filename(original_filename: str, target_lang: str, model_info: dict, style: str) -> str:
     from datetime import datetime
     import re
     
     safe_original = re.sub(r'[\\/:*?"<>|]', '_', original_filename)
-    safe_translated = re.sub(r'[\\/:*?"<>|]', '_', translated_filename)
-    if len(safe_translated) > 100:
-        safe_translated = safe_translated[:100]
+    safe_target = re.sub(r'[\\/:*?"<>|]', '_', target_lang)
     
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     
@@ -603,7 +516,7 @@ def generate_output_filename(original_filename: str, translated_filename: str, m
     safe_name = model_info["name"].replace("/", "_").replace("\\", "_").replace(" ", "_")
     safe_quant = model_info["quantization"].replace("/", "_").replace("\\", "_").replace(" ", "_")
     
-    base_name = f"{safe_original}_{safe_translated}_{safe_publisher}_{safe_name}_{safe_quant}_{style}_{timestamp}"
+    base_name = f"{safe_original}_{safe_target}_{safe_publisher}_{safe_name}_{safe_quant}_{style}_{timestamp}"
     
     output_path = base_name + ".epub"
     seq = 1
@@ -685,10 +598,7 @@ def main():
     if args.output is None:
         print("  Translating filename...")
         original_name = os.path.splitext(os.path.basename(args.input_file))[0]
-        name_result = translator.translate(original_name, args.source, args.target)
-        translated_name = name_result.get("text", original_name)
-        print(f"  Filename: {original_name} → {translated_name}")
-        args.output = generate_output_filename(original_name, translated_name, model_info, args.prompt_style)
+        args.output = generate_output_filename(original_name, args.target, model_info, args.prompt_style)
     
     print(f"  Output:   {args.output}")
     
