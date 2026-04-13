@@ -777,16 +777,13 @@ def translate_soup_sequential(soup, translator, source_lang: str, target_lang: s
     print(f"  Replacing original content with translations...")
     for block, translated in translations:
         try:
-            wrapper = BeautifulSoup(
-                f'<div class="ebook-translation" style="margin: 0.5em 0;">{translated}</div>',
+            trans_block = BeautifulSoup(
+                f'<div class="ebook-trans" style="margin: 0.2em 0 0.3em 0; color: #555;">{translated}</div>',
                 'html.parser'
-            ).div
-            
-            original_text = block.get_text()
-            block.clear()
-            block.append(wrapper)
+            )
+            block.insert_after(trans_block)
         except Exception as e:
-            print(f"  Replace failed: {e}")
+            print(f"  Insert failed: {e}")
 
 def translate_soup(soup, translator, source_lang: str, target_lang: str, max_para_tokens: int, protector: InlineProtector) -> None:
     return translate_soup_sequential(soup, translator, source_lang, target_lang, max_para_tokens, protector)
