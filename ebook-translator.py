@@ -308,14 +308,11 @@ def translate_title(content: str, translator, source_lang: str, target_lang: str
         return content
     
     original_title = match.group(1)
-    print(f"    [title] {original_title}")
     
     try:
         result = translator.translate(original_title, source_lang, target_lang)
         translated_title = result["text"]
-        print(f"    [title] OK")
-    except Exception as e:
-        print(f"    [title] FAILED: {e}")
+    except Exception:
         return content
     
     return content[:match.start(1)] + translated_title + content[match.end(1):]
@@ -704,11 +701,11 @@ def translate_content(content: str, translator, source_lang: str, target_lang: s
             print(f"FAILED: {e}")
             raise
         
-        trans_div = f'<div class="ebook-trans" style="margin: 0.2em 0 0.3em 0; color: #555;">{translated}</div>'
         tag = block['tag']
         attrs = block['attributes']
         old_block = block['full_match']
-        new_block = f'<{tag}{attrs}>{block["inner_content"]}</{tag}>{trans_div}'
+        trans_tag = f'<{tag}{attrs} class="translation">{translated}</{tag}>'
+        new_block = f'{old_block}{trans_tag}'
         
         result = result[:block['match_start'] + offset] + new_block + result[block['match_end'] + offset:]
         offset += len(new_block) - len(old_block)
