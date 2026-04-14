@@ -305,23 +305,20 @@ def translate_title(content: str, translator, source_lang: str, target_lang: str
     title_pattern = r'<title>([^<]*)</title>'
     match = re.search(title_pattern, content, re.IGNORECASE)
     if not match:
-        print("    [title] No title found in content")
         return content
     
     original_title = match.group(1)
-    print(f"    [title] Found: '{original_title}'")
+    print(f"    [title] {original_title}")
     
     try:
         result = translator.translate(original_title, source_lang, target_lang)
         translated_title = result["text"]
-        print(f"    [title] Translated to: '{translated_title}'")
+        print(f"    [title] OK")
     except Exception as e:
         print(f"    [title] FAILED: {e}")
         return content
     
-    new_content = content[:match.start(1)] + translated_title + content[match.end(1):]
-    print(f"    [title] Content after title replacement (first 200 chars): {new_content[:200]}")
-    return new_content
+    return content[:match.start(1)] + translated_title + content[match.end(1):]
 
 def find_block_elements(html_content: str) -> List[Dict]:
     blocks = []
