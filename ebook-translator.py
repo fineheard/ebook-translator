@@ -402,7 +402,9 @@ class EpubParser:
                 if isinstance(content, bytes):
                     content = content.decode('utf-8')
                 
+                print(f"    [DEBUG] Raw content before processing (first 300): {content[:300]}")
                 content = self._remove_scripts_and_styles(content)
+                print(f"    [DEBUG] Content after _remove_scripts_and_styles (first 300): {content[:300]}")
                 
                 chapters.append({
                     'id': item.id,
