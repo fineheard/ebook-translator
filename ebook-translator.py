@@ -295,6 +295,12 @@ def extract_text_from_html_element(match) -> Tuple[str, str]:
     text = strip_tags(inner_content).strip()
     return text, full_tag
 
+def has_block_inside(inner_content: str) -> bool:
+    for tag in BLOCK_TAGS:
+        if re.search(rf'<{tag}[\s>]', inner_content, re.IGNORECASE):
+            return True
+    return False
+
 def find_block_elements(html_content: str) -> List[Dict]:
     blocks = []
     
@@ -314,6 +320,9 @@ def find_block_elements(html_content: str) -> List[Dict]:
             if skip:
                 continue
             
+            if has_block_inside(inner_content):
+                continue
+            
             def strip_tags(html):
                 return re.sub(r'<[^>]+>', '', html)
             
@@ -330,18 +339,7 @@ def find_block_elements(html_content: str) -> List[Dict]:
                 })
     
     blocks.sort(key=lambda x: x['match_start'])
-    
-    blocks_to_remove = set()
-    for i, block in enumerate(blocks):
-        if i in blocks_to_remove:
-            continue
-        for j, other in enumerate(blocks):
-            if i != j and j not in blocks_to_remove:
-                if block['match_start'] <= other['match_start'] and block['match_end'] >= other['match_end']:
-                    blocks_to_remove.add(j)
-    
-    result = [b for i, b in enumerate(blocks) if i not in blocks_to_remove]
-    return result
+    return blocks
 
 def get_block_text(block: Dict) -> str:
     return block['text']
