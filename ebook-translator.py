@@ -383,7 +383,21 @@ class EpubParser:
                 content = item.get_content()
                 if isinstance(content, bytes):
                     content = content.decode('utf-8')
-                soup = BeautifulSoup(content, 'html.parser')
+                
+                original_head = None
+                original_html_tag = None
+                original_body_tag = None
+                html_match = re.match(r'(<html[^>]*>)', content)
+                if html_match:
+                    original_html_tag = html_match.group(1)
+                head_match = re.search(r'(<head[^>]*>.*?</head>)', content, re.DOTALL)
+                if head_match:
+                    original_head = head_match.group(1)
+                body_match = re.search(r'(<body[^>]*>)', content)
+                if body_match:
+                    original_body_tag = body_match.group(1)
+                
+                soup = BeautifulSoup(content, 'lxml')
                 self._remove_scripts_and_styles(soup)
                 
                 chapters.append({
@@ -391,7 +405,10 @@ class EpubParser:
                     'file_name': getattr(item, 'file_name', item.id),
                     'item': item,
                     'soup': soup,
-                    'protector': InlineProtector()
+                    'protector': InlineProtector(),
+                    'original_head': original_head,
+                    'original_html_tag': original_html_tag,
+                    'original_body_tag': original_body_tag
                 })
         
         return chapters
@@ -639,7 +656,17 @@ class EpubExporter:
                     continue
                 
                 soup = chapter['soup']
-                modified_content = str(soup)
+                original_head = chapter.get('original_head')
+                original_html_tag = chapter.get('original_html_tag')
+                original_body_tag = chapter.get('original_body_tag')
+                
+                if original_head and original_html_tag and original_body_tag:
+                    body_content = soup.body.encode_contents().decode('utf-8') if soup.body else ''
+                    body_tag_match = re.match(r'(<body[^>]*>)', original_body_tag)
+                    body_tag_open = body_tag_match.group(1) if body_tag_match else '<body>'
+                    modified_content = f'{original_html_tag}\n{original_head}\n{body_tag_open}{body_content}</body>\n</html>'
+                else:
+                    modified_content = str(soup)
                 
                 with open(file_path, 'w', encoding='utf-8') as f:
                     f.write(modified_content)
