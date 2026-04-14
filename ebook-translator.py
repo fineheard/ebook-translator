@@ -390,28 +390,35 @@ class EpubParser:
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"File not found: {file_path}")
         
-        book = self.epub.read_epub(file_path)
-        chapters = []
-        
-        for item in book.get_items():
-            if isinstance(item, self.epub.EpubHtml):
-                if self._is_nav_or_toc(item):
-                    continue
-                
-                content = item.get_content()
-                if isinstance(content, bytes):
-                    content = content.decode('utf-8')
-                
-                print(f"    [DEBUG] Raw content before processing (first 300): {content[:300]}")
-                content = self._remove_scripts_and_styles(content)
-                print(f"    [DEBUG] Content after _remove_scripts_and_styles (first 300): {content[:300]}")
-                
-                chapters.append({
-                    'id': item.id,
-                    'file_name': getattr(item, 'file_name', item.id),
-                    'item': item,
-                    'content': content
-                })
+        import zipfile
+        with zipfile.ZipFile(file_path, 'r') as zf:
+            book = self.epub.read_epub(file_path)
+            chapters = []
+            
+            for item in book.get_items():
+                if isinstance(item, self.epub.EpubHtml):
+                    if self._is_nav_or_toc(item):
+                        continue
+                    
+                    file_name = getattr(item, 'file_name', item.id)
+                    
+                    try:
+                        content = zf.read(file_name).decode('utf-8')
+                    except KeyError:
+                        content = item.get_content()
+                        if isinstance(content, bytes):
+                            content = content.decode('utf-8')
+                    
+                    print(f"    [DEBUG] Raw content from zip (first 300): {content[:300]}")
+                    content = self._remove_scripts_and_styles(content)
+                    print(f"    [DEBUG] Content after _remove_scripts_and_styles (first 300): {content[:300]}")
+                    
+                    chapters.append({
+                        'id': item.id,
+                        'file_name': file_name,
+                        'item': item,
+                        'content': content
+                    })
         
         return chapters
     
