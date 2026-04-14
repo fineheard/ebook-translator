@@ -401,10 +401,13 @@ class EpubParser:
                         continue
                     
                     file_name = getattr(item, 'file_name', item.id)
+                    print(f"    [DEBUG] file_name from ebooklib: '{file_name}'")
                     
                     try:
                         content = zf.read(file_name).decode('utf-8')
+                        print(f"    [DEBUG] Successfully read from zip with file_name")
                     except KeyError:
+                        print(f"    [DEBUG] KeyError, falling back to item.get_content()")
                         content = item.get_content()
                         if isinstance(content, bytes):
                             content = content.decode('utf-8')
