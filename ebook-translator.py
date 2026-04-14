@@ -375,75 +375,32 @@ def insert_translation_into_block(block: Dict, translation: str) -> str:
     return f'<{tag}{attrs}>{block["inner_content"]}</{tag}>{trans_div}'
 
 class EpubParser:
-    def __init__(self):
-        try:
-            import ebooklib
-            from ebooklib import epub
-            self.epub = epub
-        except ImportError:
-            raise ImportError("ebooklib is required for EPUB parsing. Install it with: pip install ebooklib")
-    
     def parse(self, file_path: str) -> List[Dict[str, Any]]:
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"File not found: {file_path}")
         
         import zipfile
+        chapters = []
+        
         with zipfile.ZipFile(file_path, 'r') as zf:
-            book = self.epub.read_epub(file_path)
-            chapters = []
-            
-            for item in book.get_items():
-                if isinstance(item, self.epub.EpubHtml):
-                    if self._is_nav_or_toc(item):
-                        continue
-                    
-                    file_name = getattr(item, 'file_name', item.id)
-                    
-                    content = None
-                    for possible_path in [file_name, f'EPUB/{file_name}', f'ePUB/{file_name}']:
-                        try:
-                            content = zf.read(possible_path).decode('utf-8')
-                            break
-                        except KeyError:
-                            continue
-                    
-                    if content is None:
-                        content = item.get_content()
-                        if isinstance(content, bytes):
-                            content = content.decode('utf-8')
-                    
-                    content = self._remove_scripts_and_styles(content)
-                    
-                    chapters.append({
-                        'id': item.id,
-                        'file_name': file_name,
-                        'item': item,
-                        'content': content
-                    })
+            for name in zf.namelist():
+                ext = os.path.splitext(name)[1].lower()
+                if ext not in {'.xhtml', '.html', '.htm', '.xml'}:
+                    continue
+                
+                content = zf.read(name).decode('utf-8')
+                content = self._remove_scripts_and_styles(content)
+                
+                file_name = os.path.basename(name)
+                
+                chapters.append({
+                    'id': file_name,
+                    'file_name': file_name,
+                    'item': None,
+                    'content': content
+                })
         
         return chapters
-    
-    def _is_nav_or_toc(self, item) -> bool:
-        file_name = item.file_name.lower() if hasattr(item, 'file_name') else ''
-        if 'nav' in file_name:
-            return True
-        if 'toc' in file_name:
-            return True
-        
-        if hasattr(item, 'attributes'):
-            epub_type = item.attributes.get('epub:type', '')
-            role = item.attributes.get('role', '')
-        else:
-            epub_type = getattr(item, 'epub_type', '')
-            role = getattr(item, 'role', '')
-        
-        if epub_type and ('toc' in epub_type.lower() or 'navigation' in epub_type.lower()):
-            return True
-        
-        if role and ('toc' in role.lower() or 'navigation' in role.lower()):
-            return True
-        
-        return False
     
     def _remove_scripts_and_styles(self, content: str) -> str:
         content = re.sub(r'<script[^>]*>.*?</script>', '', content, flags=re.DOTALL | re.IGNORECASE)
