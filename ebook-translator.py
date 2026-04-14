@@ -6,14 +6,13 @@ import json
 import argparse
 import shutil
 import warnings
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 from datetime import datetime
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
 import requests
 from requests.exceptions import ConnectionError, Timeout, HTTPError
-from bs4 import BeautifulSoup, Comment
 
 LM_STUDIO_URL = "http://localhost:1234"
 
@@ -281,83 +280,71 @@ def calculate_max_para_tokens(base_url: str, source_lang: str, target_lang: str,
     reserved = prompt_tokens + int(context_length * 0.1)
     return max(500, context_length - reserved)
 
-class InlineProtector:
-    def __init__(self):
-        self.code_count = 0
-        self.link_count = 0
-        self.styled_span_count = 0
-        self.mappings = {
-            'code': {},
-            'link': {},
-            'styled_span': {}
-        }
-    
-    def protect(self, soup) -> None:
-        self._protect_code(soup)
-        self._protect_links(soup)
-        self._protect_styled_spans(soup)
-    
-    def _protect_code(self, soup) -> None:
-        for code in soup.find_all(['code', 'pre']):
-            placeholder = f"___PB_{self.code_count}___"
-            self.mappings['code'][placeholder] = code.string if code.string else ''
-            code.string = placeholder
-            self.code_count += 1
-    
-    def _protect_links(self, soup) -> None:
-        for link in soup.find_all('a'):
-            if not link.get('href'):
-                continue
-            placeholder = f"___PL_{self.link_count}___"
-            self.mappings['link'][placeholder] = {
-                'text': link.string if link.string else '',
-                'href': link.get('href', '')
-            }
-            link.string = placeholder
-            self.link_count += 1
-    
-    def _protect_styled_spans(self, soup) -> None:
-        for span in soup.find_all('span'):
-            classes = span.get('class', [])
-            if classes and any(c in classes for c in ['italic', 'bold', 'emphasis', 'strong']):
-                placeholder = f"___PS_{self.styled_span_count}___"
-                self.mappings['styled_span'][placeholder] = {
-                    'content': span.string if span.string else '',
-                    'class': ' '.join(classes)
-                }
-                span.string = placeholder
-                self.styled_span_count += 1
+BLOCK_TAGS = ['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'div', 'blockquote']
+SKIP_TAGS_IN_BLOCK = ['script', 'style', 'head', 'title', 'meta', 'link', 'pre', 'code', 'a', 'aside']
 
-    def restore(self, soup, translated_text: str) -> str:
-        for placeholder, content in self.mappings['code'].items():
-            translated_text = translated_text.replace(placeholder, content)
-        
-        for placeholder, data in self.mappings['link'].items():
-            translated_text = translated_text.replace(placeholder, data['text'])
-        
-        for placeholder, data in self.mappings['styled_span'].items():
-            translated_text = translated_text.replace(placeholder, data['content'])
-        
-        return translated_text
+def extract_text_from_html_element(match) -> Tuple[str, str]:
+    full_tag = match.group(0)
+    tag_name = match.group(1)
+    attributes = match.group(2) or ''
+    inner_content = match.group(3)
     
-    def restore_soup(self, soup) -> None:
-        for placeholder, content in self.mappings['code'].items():
-            for code in soup.find_all(['code', 'pre']):
-                if code.string == placeholder:
-                    code.string = content
+    def strip_tags(html):
+        return re.sub(r'<[^>]+>', '', html)
+    
+    text = strip_tags(inner_content).strip()
+    return text, full_tag
+
+def find_block_elements(html_content: str) -> List[Dict]:
+    blocks = []
+    
+    for tag in BLOCK_TAGS:
+        pattern = rf'<({tag})([^>]*)>(.*?)</{tag}>'
+        for match in re.finditer(pattern, html_content, re.DOTALL | re.IGNORECASE):
+            full_tag = match.group(0)
+            tag_name = match.group(1)
+            attributes = match.group(2) or ''
+            inner_content = match.group(3)
+            
+            skip = False
+            for skip_tag in SKIP_TAGS_IN_BLOCK:
+                if re.search(rf'<{skip_tag}[^>]*>.*?</{skip_tag}>', inner_content, re.DOTALL | re.IGNORECASE):
+                    skip = True
                     break
-        
-        for placeholder, data in self.mappings['link'].items():
-            for link in soup.find_all('a'):
-                if link.string == placeholder:
-                    link.string = data['text']
-                    break
-        
-        for placeholder, data in self.mappings['styled_span'].items():
-            for span in soup.find_all('span'):
-                if span.string == placeholder:
-                    span.string = data['content']
-                    break
+            if skip:
+                continue
+            
+            def strip_tags(html):
+                return re.sub(r'<[^>]+>', '', html)
+            
+            text = strip_tags(inner_content).strip()
+            if text and len(text) > 1:
+                blocks.append({
+                    'tag': tag_name,
+                    'attributes': attributes,
+                    'inner_content': inner_content,
+                    'full_match': full_tag,
+                    'text': text,
+                    'match_start': match.start(),
+                    'match_end': match.end()
+                })
+    
+    blocks.sort(key=lambda x: x['match_start'])
+    return blocks
+
+def get_block_text(block: Dict) -> str:
+    return block['text']
+
+def extract_text_from_content(content: str, max_len: int = 1000) -> str:
+    blocks = find_block_elements(content)
+    texts = [b['text'] for b in blocks]
+    return '\n'.join(texts)[:max_len]
+
+def insert_translation_into_block(block: Dict, translation: str) -> str:
+    tag = block['tag']
+    attrs = block['attributes']
+    trans_div = f'<div class="ebook-trans" style="margin: 0.2em 0 0.3em 0; color: #555;">{translation}</div>'
+    return f'<{tag}{attrs}>{block["inner_content"]}</{tag}>{trans_div}'
 
 class EpubParser:
     def __init__(self):
@@ -384,16 +371,13 @@ class EpubParser:
                 if isinstance(content, bytes):
                     content = content.decode('utf-8')
                 
-                soup = BeautifulSoup(content, 'lxml')
-                self._remove_scripts_and_styles(soup)
+                content = self._remove_scripts_and_styles(content)
                 
                 chapters.append({
                     'id': item.id,
                     'file_name': getattr(item, 'file_name', item.id),
                     'item': item,
-                    'soup': soup,
-                    'protector': InlineProtector(),
-                    'original_content': content
+                    'content': content
                 })
         
         return chapters
@@ -420,11 +404,11 @@ class EpubParser:
         
         return False
     
-    def _remove_scripts_and_styles(self, soup):
-        for element in soup(['script', 'style']):
-            element.decompose()
-        for comment in soup.find_all(string=lambda text: isinstance(text, Comment)):
-            comment.extract()
+    def _remove_scripts_and_styles(self, content: str) -> str:
+        content = re.sub(r'<script[^>]*>.*?</script>', '', content, flags=re.DOTALL | re.IGNORECASE)
+        content = re.sub(r'<style[^>]*>.*?</style>', '', content, flags=re.DOTALL | re.IGNORECASE)
+        content = re.sub(r'<!--.*?-->', '', content, flags=re.DOTALL)
+        return content
 
 class LMStudioTranslator:
     def __init__(self, base_url: str = "http://localhost:1234", timeout: int = 3600, max_response_tokens: int = None, style: str = None, max_retries: int = 1):
@@ -603,13 +587,6 @@ def split_by_whitespace_or_marks(text: str, max_tokens: int, estimate_fn) -> Lis
     
     return chunks
 
-def safe_replace_body(original_str: str, new_body_inner: str) -> str:
-    pattern = re.compile(r'(<body[^>]*>)(.*?)(</body>)', re.DOTALL | re.IGNORECASE)
-    match = pattern.search(original_str)
-    if not match:
-        return original_str
-    return original_str[:match.start(1)] + match.group(1) + new_body_inner + match.group(3) + original_str[match.end(3):]
-
 class EpubExporter:
     def __init__(self):
         try:
@@ -647,17 +624,10 @@ class EpubExporter:
                 if not file_path or not os.path.exists(file_path):
                     continue
                 
-                soup = chapter['soup']
-                original_content = chapter.get('original_content', '')
-                
-                if original_content and soup.body:
-                    new_inner = soup.body.encode_contents().decode('utf-8')
-                    modified_content = safe_replace_body(original_content, new_inner)
-                else:
-                    modified_content = str(soup)
-                
-                with open(file_path, 'w', encoding='utf-8') as f:
-                    f.write(modified_content)
+                content = chapter.get('content', '')
+                if content:
+                    with open(file_path, 'w', encoding='utf-8') as f:
+                        f.write(content)
             
             out_tmp = output_path + '.tmp'
             with zipfile.ZipFile(out_tmp, 'w', zipfile.ZIP_DEFLATED) as zout:
@@ -690,128 +660,63 @@ def format_time(seconds: float) -> str:
         minutes = int((seconds % 3600) // 60)
         return f"{hours}h {minutes}m"
 
-def collect_text_nodes(soup) -> list:
-    SKIP_TAGS = ['script', 'style', 'head', 'title', 'meta', 'link', 'code', 'pre', 'kbd', 'samp', 'tt']
-    SKIP_PARENTS = ['[document]', 'html', 'body']
-    nodes = []
-    for element in soup.find_all(string=True):
-        if element.parent.name in SKIP_TAGS:
-            continue
-        if element.parent.name in SKIP_PARENTS:
-            continue
-        text = element.strip()
-        if text and len(text) > 1:
-            nodes.append(element)
-    return nodes
-
-def collect_block_elements(soup) -> list:
-    BLOCK_TAGS = ['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li', 'td', 'th', 'div', 'span', 'article', 'section', 'blockquote']
-    SKIP_TAGS = ['script', 'style', 'head', 'title', 'meta', 'link', 'pre', 'kbd', 'samp', 'tt', 'a', 'aside', 'code']
-    
-    def is_placeholder_only(text):
-        return bool(re.match(r'^(\s*___PB_\d+___\s*)+$', text)) or \
-               bool(re.match(r'^(\s*___PL_\d+___\s*)+$', text)) or \
-               bool(re.match(r'^(\s*___PS_\d+___\s*)+$', text))
-    
-    blocks = []
-    for tag in BLOCK_TAGS:
-        for elem in soup.find_all(tag):
-            if elem.find_parent(SKIP_TAGS):
-                continue
-            if elem.find(BLOCK_TAGS):
-                continue
-            
-            if tag == 'p':
-                code_children = elem.find_all('code', recursive=False)
-                if len(code_children) > 1:
-                    for code in code_children:
-                        code_text = code.get_text().strip()
-                        if code_text and not is_placeholder_only(code_text):
-                            blocks.append(code)
-                    continue
-            
-            text = elem.get_text().strip()
-            if text and len(text) > 1:
-                if is_placeholder_only(text):
-                    continue
-                blocks.append(elem)
-    return blocks
-
-def translate_soup_sequential(soup, translator, source_lang: str, target_lang: str, max_para_tokens: int, protector: InlineProtector) -> None:
-    protector.protect(soup)
-    
-    blocks = collect_block_elements(soup)
+def translate_content(content: str, translator, source_lang: str, target_lang: str, max_para_tokens: int) -> str:
+    blocks = find_block_elements(content)
     total_blocks = len(blocks)
-    print(f"  {total_blocks} blocks to translate (sequential)")
+    print(f"  {total_blocks} blocks to translate")
     
-    translations = []
+    result = content
+    offset = 0
     
     for i, block in enumerate(blocks):
-        text = block.get_text().strip()
+        text = block['text']
         if not text:
             continue
         
-        if re.match(r'^(\s*___PB_\d+___\s*)+$', text) or re.match(r'^(\s*___PL_\d+___\s*)+$', text) or re.match(r'^(\s*___PS_\d+___\s*)+$', text):
+        if re.search(r'<code[^>]*>.*?</code>', block['inner_content'], re.DOTALL | re.IGNORECASE):
             print(f"    [{i+1}/{total_blocks}] 代码块跳过")
             continue
         
         tokens = estimate_tokens(text)
         print(f"    [{i+1}/{total_blocks}] {tokens} tokens...", end=" ", flush=True)
         
-        if tokens > max_para_tokens:
-            chunks = split_long_paragraph(text, max_para_tokens, estimate_tokens)
-            print(f"\n    Split into {len(chunks)} parts")
-            results = []
-            for k, chunk in enumerate(chunks):
-                try:
-                    result = translator.translate(chunk, source_lang, target_lang)
-                    restored = protector.restore(soup, result["text"])
-                    results.append(restored)
-                    print(f"      Part {k+1}: {result['total_tokens']} tokens, {format_time(result['elapsed'])}")
-                except Exception as e:
-                    results.append(f"[Error: {str(e)}]")
-                    print(f"      Part {k+1}: FAILED: {e}")
-                    raise
-            translated = ''.join(results)
-        else:
-            try:
-                result = translator.translate(text, source_lang, target_lang)
-                translated = protector.restore(soup, result["text"])
-                print(f"OK, {result.get('total_tokens', 0)} tokens, {format_time(result.get('elapsed', 0))}")
+        try:
+            if tokens > max_para_tokens:
+                chunks = split_long_paragraph(text, max_para_tokens, estimate_tokens)
+                print(f"\n    Split into {len(chunks)} parts")
+                results = []
+                for k, chunk in enumerate(chunks):
+                    result_chunk = translator.translate(chunk, source_lang, target_lang)
+                    results.append(result_chunk["text"])
+                    print(f"      Part {k+1}: {result_chunk['total_tokens']} tokens, {format_time(result_chunk['elapsed'])}")
+                translated = ''.join(results)
+            else:
+                result_trans = translator.translate(text, source_lang, target_lang)
+                translated = result_trans["text"]
+                print(f"OK, {result_trans.get('total_tokens', 0)} tokens, {format_time(result_trans.get('elapsed', 0))}")
                 
                 if "no models loaded" in translated.lower():
                     print(f"\n[ERROR] No model loaded in LM Studio. Please load a model and try again.")
                     raise SystemExit(1)
-            except SystemExit:
-                raise
-            except Exception as e:
-                print(f"FAILED: {e}")
-                raise
-        
-        translations.append((block, translated))
-    
-    print(f"  Replacing original content with translations...")
-    for block, translated in translations:
-        try:
-            translated_with_br = translated.replace('\n', '<br/>')
-            trans_div = BeautifulSoup(
-                f'<div class="ebook-trans" style="margin: 0.2em 0 0.3em 0; color: #555;">{translated_with_br}</div>',
-                'html.parser'
-            ).div
-            
-            insert_target = block.parent
-            if insert_target and insert_target.name in ['blockquote', 'aside', 'article', 'section']:
-                insert_target.insert_after(trans_div)
-            else:
-                block.insert_after(trans_div)
+        except SystemExit:
+            raise
         except Exception as e:
-            print(f"  Insert failed: {e}")
+            print(f"FAILED: {e}")
+            raise
+        
+        trans_div = f'<div class="ebook-trans" style="margin: 0.2em 0 0.3em 0; color: #555;">{translated}</div>'
+        tag = block['tag']
+        attrs = block['attributes']
+        old_block = block['full_match']
+        new_block = f'<{tag}{attrs}>{block["inner_content"]}</{tag}>{trans_div}'
+        
+        result = result[:block['match_start'] + offset] + new_block + result[block['match_end'] + offset:]
+        offset += len(new_block) - len(old_block)
     
-    print(f"  Restoring inline elements in original blocks...")
-    protector.restore_soup(soup)
+    return result
 
-def translate_soup(soup, translator, source_lang: str, target_lang: str, max_para_tokens: int, protector: InlineProtector) -> None:
-    return translate_soup_sequential(soup, translator, source_lang, target_lang, max_para_tokens, protector)
+def translate_soup(content: str, translator, source_lang: str, target_lang: str, max_para_tokens: int) -> str:
+    return translate_content(content, translator, source_lang, target_lang, max_para_tokens)
 
 def translate_chapters(chapters: List[Dict[str, Any]], source_lang: str, target_lang: str, translator: LMStudioTranslator, max_para_tokens: int, progress: ProgressState, exporter: EpubExporter, original_file: str) -> None:
     total_chapters = len(chapters)
@@ -826,10 +731,10 @@ def translate_chapters(chapters: List[Dict[str, Any]], source_lang: str, target_
             continue
         
         print(f"\n  Chapter {i + 1}/{total_chapters}: [{chapter_file_name}]", flush=True)
-        soup = chapter['soup']
-        protector = chapter.get('protector', InlineProtector())
+        content = chapter['content']
         try:
-            translate_soup(soup, translator, source_lang, target_lang, max_para_tokens, protector)
+            translated_content = translate_soup(content, translator, source_lang, target_lang, max_para_tokens)
+            chapter['content'] = translated_content
         except Exception as e:
             print(f"\n  [ERROR] 翻译失败: {e}")
             print(f"  请检查 LM Studio 是否运行并加载了模型")
@@ -925,19 +830,19 @@ def main():
         print(f"  [Error] Failed to parse ebook: {e}")
         sys.exit(1)
     
-    total_text_nodes = sum(len(collect_text_nodes(c['soup'])) for c in chapters)
+    total_blocks = sum(len(find_block_elements(c['content'])) for c in chapters)
     if has_inprogress:
         progress.data["total_chapters"] = len(chapters)
         progress.save()
         processed = len(progress.data.get("processed_chapters", []))
-        print(f"  Found {len(chapters)} chapters, {total_text_nodes} text nodes")
+        print(f"  Found {len(chapters)} chapters, {total_blocks} blocks")
         print(f"  {processed} 章节已翻译，将跳过")
     else:
-        print(f"  Found {len(chapters)} chapters, {total_text_nodes} text nodes")
+        print(f"  Found {len(chapters)} chapters, {total_blocks} blocks")
     
     if args.prompt_style is None:
         print("\n[2/4] Detecting content type...")
-        sample_text = chapters[0]['soup'].get_text()[:1000] if chapters else ""
+        sample_text = extract_text_from_content(chapters[0]['content']) if chapters else ""
         detector = LMStudioTranslator(base_url=args.lm_url, timeout=30)
         detected_style = detect_content_type(sample_text, detector)
         args.prompt_style = detected_style
