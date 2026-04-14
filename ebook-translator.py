@@ -13,7 +13,7 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
 import requests
 from requests.exceptions import ConnectionError, Timeout, HTTPError
-from bs4 import BeautifulSoup, NavigableString, Comment
+from bs4 import BeautifulSoup, Comment
 
 LM_STUDIO_URL = "http://localhost:1234"
 
@@ -736,43 +736,6 @@ def collect_block_elements(soup) -> list:
                     continue
                 blocks.append(elem)
     return blocks
-
-def collect_tables(soup) -> list:
-    tables = []
-    for table in soup.find_all('table'):
-        if table.find_parent('table'):
-            continue
-        caption = table.find('caption')
-        rows = table.find_all('tr')
-        if rows:
-            tables.append({
-                'table': table,
-                'caption': caption.get_text().strip() if caption else '',
-                'row_count': len(rows)
-            })
-    return tables
-
-def translate_table(table_data: dict, translator, source_lang: str, target_lang: str) -> str:
-    table = table_data['table']
-    caption = table_data['caption']
-    
-    rows = table.find_all('tr')
-    if not rows:
-        return ''
-    
-    header_row = rows[0]
-    headers = [th.get_text().strip() for th in header_row.find_all(['th', 'td'])]
-    data_rows = rows[1:]
-    
-    header_text = ' | '.join(headers) if headers else ''
-    
-    full_text = header_text
-    for row in data_rows:
-        cells = [td.get_text().strip() for td in row.find_all(['th', 'td'])]
-        full_text += '\n' + ' | '.join(cells)
-    
-    result = translator.translate(full_text, source_lang, target_lang)
-    return result['text']
 
 def translate_soup_sequential(soup, translator, source_lang: str, target_lang: str, max_para_tokens: int, protector: InlineProtector) -> None:
     protector.protect(soup)
