@@ -280,7 +280,7 @@ def calculate_max_para_tokens(base_url: str, source_lang: str, target_lang: str,
     reserved = prompt_tokens + int(context_length * 0.1)
     return max(500, context_length - reserved)
 
-BLOCK_TAGS = ['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'div', 'blockquote']
+BLOCK_TAGS = ['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'div', 'blockquote', 'li']
 SKIP_TAGS_IN_BLOCK = ['script', 'style', 'head', 'title', 'meta', 'link', 'pre', 'code', 'a', 'aside']
 
 def extract_text_from_html_element(match) -> Tuple[str, str]:
