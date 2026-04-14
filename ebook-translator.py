@@ -301,6 +301,25 @@ def has_block_inside(inner_content: str) -> bool:
             return True
     return False
 
+def translate_title(content: str, translator, source_lang: str, target_lang: str) -> str:
+    title_pattern = r'<title>([^<]*)</title>'
+    match = re.search(title_pattern, content, re.IGNORECASE)
+    if not match:
+        return content
+    
+    original_title = match.group(1)
+    print(f"    [title] {original_title}")
+    
+    try:
+        result = translator.translate(original_title, source_lang, target_lang)
+        translated_title = result["text"]
+        print(f"    [title] OK")
+    except Exception as e:
+        print(f"    [title] FAILED: {e}")
+        return content
+    
+    return content[:match.start(1)] + translated_title + content[match.end(1):]
+
 def find_block_elements(html_content: str) -> List[Dict]:
     blocks = []
     
@@ -670,6 +689,8 @@ def format_time(seconds: float) -> str:
         return f"{hours}h {minutes}m"
 
 def translate_content(content: str, translator, source_lang: str, target_lang: str, max_para_tokens: int) -> str:
+    content = translate_title(content, translator, source_lang, target_lang)
+    
     blocks = find_block_elements(content)
     total_blocks = len(blocks)
     print(f"  {total_blocks} blocks to translate")
