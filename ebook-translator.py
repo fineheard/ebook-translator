@@ -384,19 +384,6 @@ class EpubParser:
                 if isinstance(content, bytes):
                     content = content.decode('utf-8')
                 
-                original_head = None
-                original_html_tag = None
-                original_body_tag = None
-                html_match = re.match(r'(<html[^>]*>)', content)
-                if html_match:
-                    original_html_tag = html_match.group(1)
-                head_match = re.search(r'(<head[^>]*>.*?</head>)', content, re.DOTALL)
-                if head_match:
-                    original_head = head_match.group(1)
-                body_match = re.search(r'(<body[^>]*>)', content)
-                if body_match:
-                    original_body_tag = body_match.group(1)
-                
                 soup = BeautifulSoup(content, 'lxml')
                 self._remove_scripts_and_styles(soup)
                 
@@ -406,9 +393,7 @@ class EpubParser:
                     'item': item,
                     'soup': soup,
                     'protector': InlineProtector(),
-                    'original_head': original_head,
-                    'original_html_tag': original_html_tag,
-                    'original_body_tag': original_body_tag
+                    'original_content': content
                 })
         
         return chapters
@@ -618,6 +603,13 @@ def split_by_whitespace_or_marks(text: str, max_tokens: int, estimate_fn) -> Lis
     
     return chunks
 
+def safe_replace_body(original_str: str, new_body_inner: str) -> str:
+    pattern = re.compile(r'(<body[^>]*>)(.*?)(</body>)', re.DOTALL | re.IGNORECASE)
+    match = pattern.search(original_str)
+    if not match:
+        return original_str
+    return original_str[:match.start(1)] + match.group(1) + new_body_inner + match.group(3) + original_str[match.end(3):]
+
 class EpubExporter:
     def __init__(self):
         try:
@@ -656,15 +648,11 @@ class EpubExporter:
                     continue
                 
                 soup = chapter['soup']
-                original_head = chapter.get('original_head')
-                original_html_tag = chapter.get('original_html_tag')
-                original_body_tag = chapter.get('original_body_tag')
+                original_content = chapter.get('original_content', '')
                 
-                if original_head and original_html_tag and original_body_tag:
-                    body_content = soup.body.encode_contents().decode('utf-8') if soup.body else ''
-                    body_tag_match = re.match(r'(<body[^>]*>)', original_body_tag)
-                    body_tag_open = body_tag_match.group(1) if body_tag_match else '<body>'
-                    modified_content = f'{original_html_tag}\n{original_head}\n{body_tag_open}{body_content}</body>\n</html>'
+                if original_content and soup.body:
+                    new_inner = soup.body.encode_contents().decode('utf-8')
+                    modified_content = safe_replace_body(original_content, new_inner)
                 else:
                     modified_content = str(soup)
                 
