@@ -330,7 +330,18 @@ def find_block_elements(html_content: str) -> List[Dict]:
                 })
     
     blocks.sort(key=lambda x: x['match_start'])
-    return blocks
+    
+    blocks_to_remove = set()
+    for i, block in enumerate(blocks):
+        if i in blocks_to_remove:
+            continue
+        for j, other in enumerate(blocks):
+            if i != j and j not in blocks_to_remove:
+                if block['match_start'] <= other['match_start'] and block['match_end'] >= other['match_end']:
+                    blocks_to_remove.add(j)
+    
+    result = [b for i, b in enumerate(blocks) if i not in blocks_to_remove]
+    return result
 
 def get_block_text(block: Dict) -> str:
     return block['text']
