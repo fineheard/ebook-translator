@@ -401,20 +401,21 @@ class EpubParser:
                         continue
                     
                     file_name = getattr(item, 'file_name', item.id)
-                    print(f"    [DEBUG] file_name from ebooklib: '{file_name}'")
                     
-                    try:
-                        content = zf.read(file_name).decode('utf-8')
-                        print(f"    [DEBUG] Successfully read from zip with file_name")
-                    except KeyError:
-                        print(f"    [DEBUG] KeyError, falling back to item.get_content()")
+                    content = None
+                    for possible_path in [file_name, f'EPUB/{file_name}', f'ePUB/{file_name}']:
+                        try:
+                            content = zf.read(possible_path).decode('utf-8')
+                            break
+                        except KeyError:
+                            continue
+                    
+                    if content is None:
                         content = item.get_content()
                         if isinstance(content, bytes):
                             content = content.decode('utf-8')
                     
-                    print(f"    [DEBUG] Raw content from zip (first 300): {content[:300]}")
                     content = self._remove_scripts_and_styles(content)
-                    print(f"    [DEBUG] Content after _remove_scripts_and_styles (first 300): {content[:300]}")
                     
                     chapters.append({
                         'id': item.id,
