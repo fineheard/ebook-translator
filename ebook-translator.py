@@ -209,23 +209,6 @@ def check_inprogress(input_file: str) -> Tuple[bool, str, str]:
         return True, inprogress_file, progress_file
     return False, "", ""
 
-def ask_continue_or_restart() -> bool:
-    while True:
-        print("\n" + "=" * 50)
-        print("  发现未完成的翻译任务")
-        print("=" * 50)
-        print("  是否继续上次的翻译？")
-        print("  [Y] 继续（跳过已翻译章节）")
-        print("  [N] 重新开始（删除临时文件）")
-        print("=" * 50)
-        choice = input("请选择 [Y/N]: ").strip().lower()
-        if choice in ['y', 'yes', '']:
-            return True
-        elif choice in ['n', 'no']:
-            return False
-        else:
-            print("无效选择，请重新输入")
-
 def detect_content_type(text_sample: str, translator) -> str:
     payload = {
         "messages": [
@@ -940,15 +923,8 @@ def main():
     progress = ProgressState(args.input_file)
     
     if has_inprogress:
-        continue_translation = ask_continue_or_restart()
-        if continue_translation:
-            progress.load()
-        else:
-            if os.path.exists(inprogress_path):
-                os.remove(inprogress_path)
-            progress.delete()
-            has_inprogress = False
-            inprogress_path = ""
+        print("\n  发现未完成的翻译任务，自动继续...")
+        progress.load()
     
     model_info = get_model_info(args.lm_url)
     
