@@ -21,6 +21,7 @@ PROMPT_STYLES = {
     "general": {
         "prompt": """你是专业翻译专家。将以下{源语言}翻译成自然流畅的{目标语言}。
 保持译文清晰易读，人名、地名、数字保留原文格式。
+保留原文的换行位置和格式，不要将多行文本合并成一行。
 直接输出翻译结果，不要有任何思考过程或额外说明。""",
         "temperature": 0.3
     },
@@ -32,6 +33,7 @@ PROMPT_STYLES = {
 = > < -> => <- -> :: /**/ -- // /* */ [ ] {{ }} ( ) . , : ; ' " ` ~ ! @ # $ % ^ & * + - = | \\ /
 
 保留所有代码块（<code>...</code>、<pre>...</pre>）和行内代码的原始内容。
+保留原文的换行位置和格式，不要将多行文本合并成一行。
 技术术语保持一致，不要翻译变量名、函数名、类名、API 名称、协议名称等。
 直接输出翻译结果，不要有任何思考过程、脚注、括号注释或多余文字。""",
         "temperature": 0.3
@@ -314,7 +316,7 @@ class InlineProtector:
     
     def _protect_code(self, soup) -> None:
         for code in soup.find_all(['code', 'pre']):
-            placeholder = f"__CODE_{self.code_count}__"
+            placeholder = f"___PB_{self.code_count}___"
             self.mappings['code'][placeholder] = code.string if code.string else ''
             code.string = placeholder
             self.code_count += 1
@@ -323,7 +325,7 @@ class InlineProtector:
         for link in soup.find_all('a'):
             if not link.get('href'):
                 continue
-            placeholder = f"__LINK_{self.link_count}__"
+            placeholder = f"___PL_{self.link_count}___"
             self.mappings['link'][placeholder] = {
                 'text': link.string if link.string else '',
                 'href': link.get('href', '')
@@ -335,7 +337,7 @@ class InlineProtector:
         for span in soup.find_all('span'):
             classes = span.get('class', [])
             if classes and any(c in classes for c in ['italic', 'bold', 'emphasis', 'strong']):
-                placeholder = f"__STYLE_{self.styled_span_count}__"
+                placeholder = f"___PS_{self.styled_span_count}___"
                 self.mappings['styled_span'][placeholder] = {
                     'content': span.string if span.string else '',
                     'class': ' '.join(classes)
@@ -440,7 +442,7 @@ class EpubParser:
             comment.extract()
 
 class LMStudioTranslator:
-    def __init__(self, base_url: str = "http://localhost:1234", timeout: int = 3600, max_response_tokens: int = None, style: str = None, max_retries: int = 3):
+    def __init__(self, base_url: str = "http://localhost:1234", timeout: int = 3600, max_response_tokens: int = None, style: str = None, max_retries: int = 1):
         self.base_url = base_url
         self.timeout = timeout
         self.style = style
@@ -474,7 +476,7 @@ class LMStudioTranslator:
         }
         
         last_error = None
-        for attempt in range(self.max_retries):
+        for attempt in range(1):
             start_time = time.time()
             try:
                 response = requests.post(
@@ -524,18 +526,15 @@ class LMStudioTranslator:
                 }
             except requests.exceptions.ConnectionError:
                 last_error = ConnectionError(f"Cannot connect to LM Studio at {self.base_url}")
-                warnings.warn(f"Attempt {attempt + 1}/{self.max_retries} failed: {last_error}")
-                continue
+                raise
             except Timeout:
                 last_error = TimeoutError("Translation request timed out")
-                warnings.warn(f"Attempt {attempt + 1}/{self.max_retries} failed: {last_error}")
-                continue
+                raise
             except (HTTPError, RuntimeError):
                 raise
             except Exception as e:
                 last_error = ValueError(f"Unexpected error: {str(e)}")
-                warnings.warn(f"Attempt {attempt + 1}/{self.max_retries} failed: {last_error}")
-                continue
+                raise
         
         raise last_error
 
@@ -709,7 +708,12 @@ def collect_text_nodes(soup) -> list:
 
 def collect_block_elements(soup) -> list:
     BLOCK_TAGS = ['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li', 'td', 'th', 'div', 'span', 'article', 'section', 'blockquote']
-    SKIP_TAGS = ['script', 'style', 'head', 'title', 'meta', 'link', 'code', 'pre', 'kbd', 'samp', 'tt', 'a', 'aside']
+    SKIP_TAGS = ['script', 'style', 'head', 'title', 'meta', 'link', 'pre', 'kbd', 'samp', 'tt', 'a', 'aside', 'code']
+    
+    def is_placeholder_only(text):
+        return bool(re.match(r'^(\s*___PB_\d+___\s*)+$', text)) or \
+               bool(re.match(r'^(\s*___PL_\d+___\s*)+$', text)) or \
+               bool(re.match(r'^(\s*___PS_\d+___\s*)+$', text))
     
     blocks = []
     for tag in BLOCK_TAGS:
@@ -718,8 +722,20 @@ def collect_block_elements(soup) -> list:
                 continue
             if elem.find(BLOCK_TAGS):
                 continue
+            
+            if tag == 'p':
+                code_children = elem.find_all('code', recursive=False)
+                if len(code_children) > 1:
+                    for code in code_children:
+                        code_text = code.get_text().strip()
+                        if code_text and not is_placeholder_only(code_text):
+                            blocks.append(code)
+                    continue
+            
             text = elem.get_text().strip()
             if text and len(text) > 1:
+                if is_placeholder_only(text):
+                    continue
                 blocks.append(elem)
     return blocks
 
@@ -761,17 +777,21 @@ def translate_table(table_data: dict, translator, source_lang: str, target_lang:
     return result['text']
 
 def translate_soup_sequential(soup, translator, source_lang: str, target_lang: str, max_para_tokens: int, protector: InlineProtector) -> None:
+    protector.protect(soup)
+    
     blocks = collect_block_elements(soup)
     total_blocks = len(blocks)
     print(f"  {total_blocks} blocks to translate (sequential)")
-    
-    protector.protect(soup)
     
     translations = []
     
     for i, block in enumerate(blocks):
         text = block.get_text().strip()
         if not text:
+            continue
+        
+        if re.match(r'^(\s*___PB_\d+___\s*)+$', text) or re.match(r'^(\s*___PL_\d+___\s*)+$', text) or re.match(r'^(\s*___PS_\d+___\s*)+$', text):
+            print(f"    [{i+1}/{total_blocks}] 代码块跳过")
             continue
         
         tokens = estimate_tokens(text)
@@ -783,25 +803,18 @@ def translate_soup_sequential(soup, translator, source_lang: str, target_lang: s
             results = []
             for k, chunk in enumerate(chunks):
                 try:
-                    protected_text = chunk
-                    for placeholder, content in protector.mappings['code'].items():
-                        protected_text = protected_text.replace(placeholder, content)
-                    
-                    result = translator.translate(protected_text, source_lang, target_lang)
+                    result = translator.translate(chunk, source_lang, target_lang)
                     restored = protector.restore(soup, result["text"])
                     results.append(restored)
                     print(f"      Part {k+1}: {result['total_tokens']} tokens, {format_time(result['elapsed'])}")
                 except Exception as e:
                     results.append(f"[Error: {str(e)}]")
                     print(f"      Part {k+1}: FAILED: {e}")
+                    raise
             translated = ''.join(results)
         else:
             try:
-                protected_text = text
-                for placeholder, content in protector.mappings['code'].items():
-                    protected_text = protected_text.replace(placeholder, content)
-                
-                result = translator.translate(protected_text, source_lang, target_lang)
+                result = translator.translate(text, source_lang, target_lang)
                 translated = protector.restore(soup, result["text"])
                 print(f"OK, {result.get('total_tokens', 0)} tokens, {format_time(result.get('elapsed', 0))}")
                 
@@ -812,15 +825,16 @@ def translate_soup_sequential(soup, translator, source_lang: str, target_lang: s
                 raise
             except Exception as e:
                 print(f"FAILED: {e}")
-                translated = f"[Error: {str(e)}]"
+                raise
         
         translations.append((block, translated))
     
     print(f"  Replacing original content with translations...")
     for block, translated in translations:
         try:
+            translated_with_br = translated.replace('\n', '<br/>')
             trans_div = BeautifulSoup(
-                f'<div class="ebook-trans" style="margin: 0.2em 0 0.3em 0; color: #555;">{translated}</div>',
+                f'<div class="ebook-trans" style="margin: 0.2em 0 0.3em 0; color: #555;">{translated_with_br}</div>',
                 'html.parser'
             ).div
             
@@ -853,7 +867,12 @@ def translate_chapters(chapters: List[Dict[str, Any]], source_lang: str, target_
         print(f"\n  Chapter {i + 1}/{total_chapters}: [{chapter_file_name}]", flush=True)
         soup = chapter['soup']
         protector = chapter.get('protector', InlineProtector())
-        translate_soup(soup, translator, source_lang, target_lang, max_para_tokens, protector)
+        try:
+            translate_soup(soup, translator, source_lang, target_lang, max_para_tokens, protector)
+        except Exception as e:
+            print(f"\n  [ERROR] 翻译失败: {e}")
+            print(f"  请检查 LM Studio 是否运行并加载了模型")
+            sys.exit(1)
         
         progress.mark_chapter_processed(chapter_file_name)
         progress.add_tokens(translator.total_tokens)
